@@ -414,28 +414,24 @@ const upload = multer({
 });
 
 ////////////////////////////////////////////////////////////
-/// EMAIL CONFIGURATION (FIX: Using env variables)
+/// EMAIL CONFIGURATION
 ////////////////////////////////////////////////////////////
-/* const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-}); */
-
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  connectionTimeout: 20000,
-  greetingTimeout: 20000,
-  socketTimeout: 30000,
+  port: 587,
+  secure: false,
+  requireTLS: true,
+  family: 4,
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 45000,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
 });
+
+console.log("📧 Mail transporter configured");
 
 
 transporter.verify((error, success) => {
@@ -2360,6 +2356,23 @@ app.delete("/delete-account", verifyToken, (req, res) => {
     }
   );
 });
+
+app.get("/mail-test", async (req, res) => {
+  try {
+    await transporter.sendMail({
+      from: `"TeamTracker" <${process.env.EMAIL_USER}>`,
+      to: process.env.EMAIL_USER,
+      subject: "TeamTracker Mail Test",
+      text: "Mail working ✅",
+    });
+
+    res.json({ message: "Mail sent ✅" });
+  } catch (err) {
+    console.log("❌ Mail test failed:", err.message);
+    res.status(500).json({ message: "Mail failed ❌", error: err.message });
+  }
+});
+
 
 ////////////////////////////////////////////////////////////
 /// HEALTH CHECK
