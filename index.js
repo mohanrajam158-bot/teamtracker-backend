@@ -256,25 +256,40 @@ if (!fs.existsSync(uploadDir)) {
 ////////////////////////////////////////////////////////////
 /// DB CONNECTION
 ////////////////////////////////////////////////////////////
-
-const db = process.env.DATABASE_URL
-  ? mysql.createConnection({
+const dbConfig = process.env.DATABASE_URL
+  ? {
       uri: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
       connectTimeout: 10000,
-    })
-  : mysql.createConnection({
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0,
+    }
+  : {
       host: process.env.DB_HOST || "localhost",
       user: process.env.DB_USER || "root",
       password: process.env.DB_PASSWORD || "newpassword",
       database: process.env.DB_NAME || "team_tracker",
+      port: process.env.DB_PORT || 3306,
       connectTimeout: 10000,
-    });
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0,
+    };
 
-db.connect((err) => {
-  if (err) console.log("❌ DB Connection Failed:", err);
-  else console.log("✅ DB Connected");
-});
+const db = mysql.createPool(dbConfig);
+
+db.query(
+  { sql: "SELECT 1 AS ok", timeout: 10000 },
+  (err) => {
+    if (err) console.log("❌ DB Pool Test Failed:", err.message);
+    else console.log("✅ DB Pool Connected");
+  }
+);
 
 
 ////////////////////////////////////////////////////////////
@@ -2376,17 +2391,24 @@ app.get("/db-test", (req, res) => {
 ////////////////////////////////////////////////////////////
 /// DB INFO LOGGING
 ////////////////////////////////////////////////////////////
-console.log("Connected DB:", db.config.database);
+console.log(
+  "Connected DB:",
+  db.config.connectionConfig.database
+);
 
-db.query("SELECT COUNT(*) as total FROM users", (err, result) => {
-  if (!err) console.log("✅ Total users:", result[0].total);
-});
+console.log(
+  "DB Host:",
+  db.config.connectionConfig.host
+);
 
-app.use((req, res) => {
-  res.status(404).json({ message: "Route not found ❌" });
-});
+db.query(
+  { sql: "SELECT COUNT(*) as total FROM users", timeout: 10000 },
+  (err, result) => {
+    if (err) console.log("❌ Users count failed:", err.message);
+    else console.log("✅ Total users:", result[0].total);
+  }
+);
 
-console.log("DB Host:", db.config.host);
 
 ////////////////////////////////////////////////////////////
 /// ✅ SERVER START
