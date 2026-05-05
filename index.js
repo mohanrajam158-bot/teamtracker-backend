@@ -405,13 +405,27 @@ const upload = multer({
 ////////////////////////////////////////////////////////////
 /// EMAIL CONFIGURATION (FIX: Using env variables)
 ////////////////////////////////////////////////////////////
-const transporter = nodemailer.createTransport({
+/* const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
   }
+}); */
+
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  connectionTimeout: 20000,
+  greetingTimeout: 20000,
+  socketTimeout: 30000,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
 });
+
 
 transporter.verify((error, success) => {
   if (error) {
@@ -855,79 +869,105 @@ app.post("/register", async (req, res) => {
   });
 });
 
-app.post("/login", loginLimiter, (req, res) => {
-  const { email, password } = req.body;
+app.post("/login", loginLimiter, async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-  const sql = "SELECT * FROM users WHERE email = ?";
+    console.log("📩 Login request:", email);
 
-  db.query(sql, [email], async (err, result) => {
-    if (err) {
-      console.log("❌ Database Error:", err);
-      return res.status(500).json({ message: "Database Error ❌" });
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email & Password required ❌" });
     }
 
-    if (result.length === 0) {
-      console.log("❌ User Not Found:", email);
-      return res.status(401).json({ message: "User Not Found ❌" });
-    }
+    const sql = "SELECT * FROM users WHERE email = ?";
 
-    const user = result[0];
-
-    try {
-      const isMatch = await bcrypt.compare(password, user.password);
-
-      if (!isMatch) {
-        console.log("❌ Wrong Password for:", email);
-        return res.status(401).json({ message: "Wrong Password ❌" });
+    db.query(sql, [email], async (err, result) => {
+      if (err) {
+        console.error("❌ Database Error:", err);
+        return res.status(500).json({ message: "Database Error ❌" });
       }
 
-      if (user.role === "tl" && user.status === "pending") {
-        console.log("⏳ TL Account Pending:", email);
-        return res.status(403).json({ message: "Waiting for admin approval ⏳" });
+      if (!result || result.length === 0) {
+        console.log("❌ User Not Found:", email);
+        return res.status(401).json({ message: "User Not Found ❌" });
       }
 
-      if (user.status === "blocked") {
-        console.log("🚫 Account Blocked:", email);
-        return res.status(403).json({ message: "Account blocked ❌" });
-      }
+      const user = result[0];
 
-      const finalTeamId = user.team_id || '1';
+      console.log("👤 User found:", user.email);
 
-      if (!user.team_id) {
-        db.query("UPDATE users SET team_id = '1' WHERE id = ?", [user.id]);
-        console.log(`✅ team_id set for user: ${user.name}`);
-      }
-
-      const token = jwt.sign(
-        { id: user.id, role: user.role, team_id: finalTeamId },
-        process.env.JWT_SECRET
-      );
-
-      console.log("✅ Login Success:", email);
-
-      return res.json({
-        message: "Login Success ✅",
-        token,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          emp_code: user.emp_code || user.empCode,
-          theme_preference: user.theme_preference,
-          team_id: finalTeamId,
-          profile_image: user.profile_image,
-          status: user.status
+      try {
+        // ⚠️ HANDLE EMPTY PASSWORD SAFELY
+        if (!user.password) {
+          console.error("❌ Stored password missing");
+          return res.status(500).json({ message: "User data error ❌" });
         }
-      });
 
-    } catch (bcryptErr) {
-      console.error("❌ Bcrypt Error:", bcryptErr);
-      return res.status(500).json({ message: "Internal Server Error" });
-    }
-  });
+        const isMatch = await bcrypt.compare(password, user.password);
+
+        if (!isMatch) {
+          console.log("❌ Wrong Password:", email);
+          return res.status(401).json({ message: "Wrong Password ❌" });
+        }
+
+        // 🚫 STATUS CHECKS
+        if (user.role === "tl" && user.status === "pending") {
+          return res.status(403).json({ message: "Waiting for admin approval ⏳" });
+        }
+
+        if (user.status === "blocked") {
+          return res.status(403).json({ message: "Account blocked ❌" });
+        }
+
+        // 🧠 TEAM ID FIX
+        const finalTeamId = user.team_id || "1";
+
+        if (!user.team_id) {
+          db.query("UPDATE users SET team_id = '1' WHERE id = ?", [user.id]);
+          console.log("✅ team_id auto set");
+        }
+
+        // 🔐 TOKEN SAFE
+        if (!process.env.JWT_SECRET) {
+          console.error("❌ JWT_SECRET missing");
+          return res.status(500).json({ message: "Server config error ❌" });
+        }
+
+        const token = jwt.sign(
+          { id: user.id, role: user.role, team_id: finalTeamId },
+          process.env.JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        console.log("✅ Login Success:", email);
+
+        return res.json({
+          message: "Login Success ✅",
+          token,
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            emp_code: user.emp_code || user.empCode,
+            theme_preference: user.theme_preference,
+            team_id: finalTeamId,
+            profile_image: user.profile_image,
+            status: user.status
+          }
+        });
+
+      } catch (bcryptErr) {
+        console.error("❌ Bcrypt Error:", bcryptErr);
+        return res.status(500).json({ message: "Password check error ❌" });
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Login API Crash:", error);
+    return res.status(500).json({ message: "Server crash ❌" });
+  }
 });
-
 ////////////////////////////////////////////////////////////
 /// 7. WORK UPDATE ROUTES
 ////////////////////////////////////////////////////////////
