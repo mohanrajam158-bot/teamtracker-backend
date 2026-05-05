@@ -870,22 +870,31 @@ app.post("/register", async (req, res) => {
 });
 
 app.post("/login", loginLimiter, async (req, res) => {
+  console.log("🔥 LOGIN API HIT");
+
   try {
     const { email, password } = req.body;
 
     console.log("📩 Login request:", email);
 
     if (!email || !password) {
+      console.log("⚠️ Missing email/password");
       return res.status(400).json({ message: "Email & Password required ❌" });
     }
 
     const sql = "SELECT * FROM users WHERE email = ?";
 
+    console.log("📡 Running DB query...");
+
     db.query(sql, [email], async (err, result) => {
+      console.log("📊 DB response received");
+
       if (err) {
         console.error("❌ Database Error:", err);
         return res.status(500).json({ message: "Database Error ❌" });
       }
+
+      console.log("📊 DB result:", result);
 
       if (!result || result.length === 0) {
         console.log("❌ User Not Found:", email);
@@ -897,11 +906,12 @@ app.post("/login", loginLimiter, async (req, res) => {
       console.log("👤 User found:", user.email);
 
       try {
-        // ⚠️ HANDLE EMPTY PASSWORD SAFELY
         if (!user.password) {
           console.error("❌ Stored password missing");
           return res.status(500).json({ message: "User data error ❌" });
         }
+
+        console.log("🔐 Checking password...");
 
         const isMatch = await bcrypt.compare(password, user.password);
 
@@ -910,16 +920,18 @@ app.post("/login", loginLimiter, async (req, res) => {
           return res.status(401).json({ message: "Wrong Password ❌" });
         }
 
-        // 🚫 STATUS CHECKS
+        console.log("✅ Password correct");
+
         if (user.role === "tl" && user.status === "pending") {
+          console.log("⏳ TL pending approval");
           return res.status(403).json({ message: "Waiting for admin approval ⏳" });
         }
 
         if (user.status === "blocked") {
+          console.log("🚫 Account blocked");
           return res.status(403).json({ message: "Account blocked ❌" });
         }
 
-        // 🧠 TEAM ID FIX
         const finalTeamId = user.team_id || "1";
 
         if (!user.team_id) {
@@ -927,11 +939,12 @@ app.post("/login", loginLimiter, async (req, res) => {
           console.log("✅ team_id auto set");
         }
 
-        // 🔐 TOKEN SAFE
         if (!process.env.JWT_SECRET) {
           console.error("❌ JWT_SECRET missing");
           return res.status(500).json({ message: "Server config error ❌" });
         }
+
+        console.log("🔑 Generating token...");
 
         const token = jwt.sign(
           { id: user.id, role: user.role, team_id: finalTeamId },
@@ -939,7 +952,7 @@ app.post("/login", loginLimiter, async (req, res) => {
           { expiresIn: "7d" }
         );
 
-        console.log("✅ Login Success:", email);
+        console.log("🎉 Login Success:", email);
 
         return res.json({
           message: "Login Success ✅",
