@@ -434,13 +434,13 @@ const transporter = nodemailer.createTransport({
 console.log("📧 Mail transporter configured");
 
 
-transporter.verify((error, success) => {
+/* transporter.verify((error, success) => {
   if (error) {
     console.log("❌ Mail Error:", error);
   } else {
     console.log("✅ Mail server ready");
   }
-});
+}); */
 
 ////////////////////////////////////////////////////////////
 /// OTP STORE (In-memory, TODO: Move to DB)
