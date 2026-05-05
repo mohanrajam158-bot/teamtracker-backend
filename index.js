@@ -256,30 +256,26 @@ if (!fs.existsSync(uploadDir)) {
 ////////////////////////////////////////////////////////////
 /// DB CONNECTION
 ////////////////////////////////////////////////////////////
-/* const db = mysql.createConnection({
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "newpassword",
-  database: process.env.DB_NAME || "team_tracker",
-});
- */
 
 const db = process.env.DATABASE_URL
   ? mysql.createConnection({
       uri: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
+      connectTimeout: 10000,
     })
   : mysql.createConnection({
       host: process.env.DB_HOST || "localhost",
       user: process.env.DB_USER || "root",
       password: process.env.DB_PASSWORD || "newpassword",
       database: process.env.DB_NAME || "team_tracker",
+      connectTimeout: 10000,
     });
 
 db.connect((err) => {
   if (err) console.log("❌ DB Connection Failed:", err);
   else console.log("✅ DB Connected");
 });
+
 
 ////////////////////////////////////////////////////////////
 /// JWT VERIFY MIDDLEWARE
@@ -872,115 +868,119 @@ app.post("/register", async (req, res) => {
 app.post("/login", loginLimiter, async (req, res) => {
   console.log("🔥 LOGIN API HIT");
 
+  const loginTimeout = setTimeout(() => {
+    if (!res.headersSent) {
+      console.log("⏱️ Login timeout");
+      return res.status(504).json({ message: "Login timeout - DB took too long ❌" });
+    }
+  }, 15000);
+
+  const sendJson = (status, body) => {
+    clearTimeout(loginTimeout);
+    if (!res.headersSent) {
+      return res.status(status).json(body);
+    }
+  };
+
   try {
     const { email, password } = req.body;
 
     console.log("📩 Login request:", email);
 
     if (!email || !password) {
-      console.log("⚠️ Missing email/password");
-      return res.status(400).json({ message: "Email & Password required ❌" });
+      return sendJson(400, { message: "Email & Password required ❌" });
     }
-
-    const sql = "SELECT * FROM users WHERE email = ?";
 
     console.log("📡 Running DB query...");
 
-    db.query(sql, [email], async (err, result) => {
-      console.log("📊 DB response received");
+    db.query(
+      {
+        sql: "SELECT * FROM users WHERE email = ?",
+        timeout: 10000,
+      },
+      [email],
+      async (err, result) => {
+        console.log("📊 DB response received");
 
-      if (err) {
-        console.error("❌ Database Error:", err);
-        return res.status(500).json({ message: "Database Error ❌" });
-      }
-
-      console.log("📊 DB result:", result);
-
-      if (!result || result.length === 0) {
-        console.log("❌ User Not Found:", email);
-        return res.status(401).json({ message: "User Not Found ❌" });
-      }
-
-      const user = result[0];
-
-      console.log("👤 User found:", user.email);
-
-      try {
-        if (!user.password) {
-          console.error("❌ Stored password missing");
-          return res.status(500).json({ message: "User data error ❌" });
+        if (err) {
+          console.error("❌ Database Error:", err);
+          return sendJson(500, { message: "Database Error ❌", error: err.message });
         }
 
-        console.log("🔐 Checking password...");
-
-        const isMatch = await bcrypt.compare(password, user.password);
-
-        if (!isMatch) {
-          console.log("❌ Wrong Password:", email);
-          return res.status(401).json({ message: "Wrong Password ❌" });
+        if (!result || result.length === 0) {
+          console.log("❌ User Not Found:", email);
+          return sendJson(401, { message: "User Not Found ❌" });
         }
 
-        console.log("✅ Password correct");
+        const user = result[0];
+        console.log("👤 User found:", user.email);
 
-        if (user.role === "tl" && user.status === "pending") {
-          console.log("⏳ TL pending approval");
-          return res.status(403).json({ message: "Waiting for admin approval ⏳" });
-        }
-
-        if (user.status === "blocked") {
-          console.log("🚫 Account blocked");
-          return res.status(403).json({ message: "Account blocked ❌" });
-        }
-
-        const finalTeamId = user.team_id || "1";
-
-        if (!user.team_id) {
-          db.query("UPDATE users SET team_id = '1' WHERE id = ?", [user.id]);
-          console.log("✅ team_id auto set");
-        }
-
-        if (!process.env.JWT_SECRET) {
-          console.error("❌ JWT_SECRET missing");
-          return res.status(500).json({ message: "Server config error ❌" });
-        }
-
-        console.log("🔑 Generating token...");
-
-        const token = jwt.sign(
-          { id: user.id, role: user.role, team_id: finalTeamId },
-          process.env.JWT_SECRET,
-          { expiresIn: "7d" }
-        );
-
-        console.log("🎉 Login Success:", email);
-
-        return res.json({
-          message: "Login Success ✅",
-          token,
-          user: {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            emp_code: user.emp_code || user.empCode,
-            theme_preference: user.theme_preference,
-            team_id: finalTeamId,
-            profile_image: user.profile_image,
-            status: user.status
+        try {
+          if (!user.password) {
+            return sendJson(500, { message: "User data error ❌" });
           }
-        });
 
-      } catch (bcryptErr) {
-        console.error("❌ Bcrypt Error:", bcryptErr);
-        return res.status(500).json({ message: "Password check error ❌" });
+          console.log("🔐 Checking password...");
+          const isMatch = await bcrypt.compare(password, user.password);
+
+          if (!isMatch) {
+            console.log("❌ Wrong Password:", email);
+            return sendJson(401, { message: "Wrong Password ❌" });
+          }
+
+          if (user.role === "tl" && user.status === "pending") {
+            return sendJson(403, { message: "Waiting for admin approval ⏳" });
+          }
+
+          if (user.status === "blocked") {
+            return sendJson(403, { message: "Account blocked ❌" });
+          }
+
+          const finalTeamId = user.team_id || "1";
+
+          if (!user.team_id) {
+            db.query("UPDATE users SET team_id = '1' WHERE id = ?", [user.id]);
+          }
+
+          if (!process.env.JWT_SECRET) {
+            return sendJson(500, { message: "Server config error ❌" });
+          }
+
+          const token = jwt.sign(
+            { id: user.id, role: user.role, team_id: finalTeamId },
+            process.env.JWT_SECRET,
+            { expiresIn: "7d" }
+          );
+
+          console.log("🎉 Login Success:", email);
+
+          return sendJson(200, {
+            message: "Login Success ✅",
+            token,
+            user: {
+              id: user.id,
+              name: user.name,
+              email: user.email,
+              role: user.role,
+              emp_code: user.emp_code || user.empCode,
+              theme_preference: user.theme_preference,
+              team_id: finalTeamId,
+              profile_image: user.profile_image,
+              status: user.status,
+            },
+          });
+        } catch (bcryptErr) {
+          console.error("❌ Bcrypt Error:", bcryptErr);
+          return sendJson(500, { message: "Password check error ❌" });
+        }
       }
-    });
-
+    );
   } catch (error) {
     console.error("❌ Login API Crash:", error);
-    return res.status(500).json({ message: "Server crash ❌" });
+    return sendJson(500, { message: "Server crash ❌" });
   }
 });
+
 ////////////////////////////////////////////////////////////
 /// 7. WORK UPDATE ROUTES
 ////////////////////////////////////////////////////////////
@@ -2351,6 +2351,26 @@ app.delete("/delete-account", verifyToken, (req, res) => {
 ////////////////////////////////////////////////////////////
 app.get("/", (req, res) => {
   res.send("Backend Working 💪");
+});
+
+app.get("/db-test", (req, res) => {
+  db.query(
+    {
+      sql: "SELECT 1 AS ok, DATABASE() AS db",
+      timeout: 10000,
+    },
+    (err, result) => {
+      if (err) {
+        console.log("❌ DB TEST ERROR:", err);
+        return res.status(500).json({ error: err.message });
+      }
+
+      return res.json({
+        message: "DB working",
+        result,
+      });
+    }
+  );
 });
 
 ////////////////////////////////////////////////////////////
