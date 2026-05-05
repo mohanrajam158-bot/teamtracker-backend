@@ -1,9 +1,9 @@
 require("dotenv").config();
-console.log("USER:", process.env.EMAIL_USER);
-console.log("PASS:", process.env.EMAIL_PASS);
+/* console.log("USER:", process.env.EMAIL_USER);
+console.log("PASS:", process.env.EMAIL_PASS); */
 const express = require("express");
 const http = require("http");
-const mysql = require("mysql2");
+const mysql = require("mysql2")
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -22,20 +22,59 @@ const admin = require("firebase-admin");
 ////////////////////////////////////////////////////////////
 const app = express();
 const server = http.createServer(app);
+app.set("trust proxy", 1);
 
 //const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-const serviceAccount = require("./serviceAccountKey.json");
-/* admin.initializeApp({
+/*const serviceAccount = require("./serviceAccountKey.json");
+ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 }); */
 
-admin.initializeApp({
-  credential: admin.credential.cert({
-    project_id: process.env.FIREBASE_PROJECT_ID,
-    client_email: process.env.FIREBASE_CLIENT_EMAIL,
-    private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  }),
-});
+
+let firebaseReady = false;
+
+try {
+  let serviceAccount;
+
+  if (process.env.FIREBASE_KEY_BASE64) {
+    serviceAccount = JSON.parse(
+      Buffer.from(process.env.FIREBASE_KEY_BASE64, "base64").toString("utf8")
+    );
+  } else if (process.env.FIREBASE_KEY) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+    }
+  } else {
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY
+      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n")
+      : "";
+
+    if (
+      !process.env.FIREBASE_PROJECT_ID ||
+      !process.env.FIREBASE_CLIENT_EMAIL ||
+      !privateKey
+    ) {
+      throw new Error("Firebase env missing");
+    }
+
+    serviceAccount = {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey,
+    };
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+
+  firebaseReady = true;
+  console.log("✅ Firebase Admin ready");
+} catch (e) {
+  console.log("⚠️ Firebase Admin disabled:", e.message);
+}
 
 ////////////////////////////////////////////////////////////
 /// ALLOWED ORIGINS (For CORS + Socket.IO)
@@ -73,7 +112,7 @@ const messageRateLimiter = rateLimit({
 ////////////////////////////////////////////////////////////
 /// SOCKET.IO SETUP (FIX: Matching CORS)
 ////////////////////////////////////////////////////////////
-const io = require("socket.io")(server, {
+/* const io = require("socket.io")(server, {
   cors: {
     origin: ALLOWED_ORIGINS,
     methods: ["GET", "POST"],
@@ -124,23 +163,80 @@ io.on("connection", (socket) => {
 ////////////////////////////////////////////////////////////
 /// CORS SETUP (FIX: Consistent with Socket)
 ////////////////////////////////////////////////////////////
-/* app.use(cors({
+app.use(cors({
   origin: ALLOWED_ORIGINS,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
- */
+ 
 
 app.use(cors({
   origin: "*",
   methods: ["GET","POST","PUT","DELETE"],
   allowedHeaders: ["Content-Type","Authorization"]
-}));
+})); */
+
+////////////////////////////////////////////////////////////
+/// CORS + SOCKET.IO SETUP
+////////////////////////////////////////////////////////////
+const corsOptions = {
+  origin: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: false,
+};
+
+const io = require("socket.io")(server, {
+  cors: corsOptions,
+});
+
+app.use(cors(corsOptions));
+
+io.use((socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+
+    if (!token) {
+      return next(new Error("No token ❌"));
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) {
+        return next(new Error("Invalid token ❌"));
+      }
+
+      socket.user = decoded;
+      next();
+    });
+  } catch (e) {
+    next(new Error("Auth error ❌"));
+  }
+});
+
+io.on("connection", (socket) => {
+  console.log("🔥 User connected:", socket.id);
+
+  socket.on("joinRoom", () => {
+    const team_id = socket.user.team_id;
+    socket.join(`team_${team_id}`);
+    console.log("✅ Joined secure room:", team_id);
+  });
+
+  socket.on("joinUser", (user_id) => {
+    socket.join(user_id.toString());
+    console.log("✅ User joined personal room:", user_id);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("❌ User disconnected:", socket.id);
+  });
+});
+
 ////////////////////////////////////////////////////////////
 /// GLOBAL RATE LIMITER
 ////////////////////////////////////////////////////////////
-app.use("/login", loginLimiter);
+//app.use("/login", loginLimiter);
 app.use("/send-message", messageRateLimiter);
 ////////////////////////////////////////////////////////////
 /// MIDDLEWARE SETUP
@@ -168,12 +264,18 @@ if (!fs.existsSync(uploadDir)) {
 });
  */
 
-const db = mysql.createConnection({
-  uri: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,
-  },
-});
+const db = process.env.DATABASE_URL
+  ? mysql.createConnection({
+      uri: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    })
+  : mysql.createConnection({
+      host: process.env.DB_HOST || "localhost",
+      user: process.env.DB_USER || "root",
+      password: process.env.DB_PASSWORD || "newpassword",
+      database: process.env.DB_NAME || "team_tracker",
+    });
+
 db.connect((err) => {
   if (err) console.log("❌ DB Connection Failed:", err);
   else console.log("✅ DB Connected");
@@ -2216,7 +2318,14 @@ console.log("DB Host:", db.config.host);
 ////////////////////////////////////////////////////////////
 /// ✅ SERVER START
 ////////////////////////////////////////////////////////////
-server.listen(5000, "0.0.0.0", () => {
+/* server.listen(5000, "0.0.0.0", () => {
   console.log("🚀 Server running on port 5000");
+});
+ */
+
+const PORT = process.env.PORT || 5000;
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
