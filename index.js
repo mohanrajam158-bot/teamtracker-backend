@@ -416,7 +416,7 @@ const upload = multer({
 ////////////////////////////////////////////////////////////
 /// EMAIL CONFIGURATION
 ////////////////////////////////////////////////////////////
-const transporter = nodemailer.createTransport({
+/* const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 587,
   secure: false,
@@ -431,16 +431,25 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-console.log("📧 Mail transporter configured");
+console.log("📧 Mail transporter configured"); */
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+  tls: {
+    rejectUnauthorized: false,
+  },
+});
 
-
-/* transporter.verify((error, success) => {
+ transporter.verify((error, success) => {
   if (error) {
     console.log("❌ Mail Error:", error);
   } else {
     console.log("✅ Mail server ready");
   }
-}); */
+}); 
 
 ////////////////////////////////////////////////////////////
 /// OTP STORE (In-memory, TODO: Move to DB)
