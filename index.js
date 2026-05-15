@@ -457,6 +457,79 @@ const transporter = nodemailer.createTransport({
 const otpStore = {};
 
 ////////////////////////////////////////////////////////////
+/// ✅ HELPER: Send FCM push to a list of tokens
+/// Rule 4: Caller always excludes sender before calling this
+////////////////////////////////////////////////////////////
+async function sendPushNotification(tokens, title, body, data = {}) {
+  if (!firebaseReady || !tokens || tokens.length === 0) return;
+  try {
+    const result = await admin.messaging().sendEachForMulticast({
+      tokens,
+      notification: { title: "TEAM WORK TRACKER", body },
+      android: {
+        priority: "high",
+        notification: {
+          channelId: "tl_updates",
+          priority: "high",
+          sound: "default",
+          defaultSound: true,
+          defaultVibrateTimings: true,
+          visibility: "public",
+          icon: "ic_launcher",
+        },
+      },
+      data: { click_action: "FLUTTER_NOTIFICATION_CLICK", ...data },
+    });
+    console.log(`✅ Push sent: ${result.successCount}/${tokens.length}`);
+  } catch (err) {
+    console.log("⚠️ Push notification error:", err.message);
+  }
+}
+
+/// ✅ HELPER: Get FCM tokens for given user IDs (notification_enabled = 1)
+/// Rule 4: excludeUserId filters out the sender
+function getFcmTokens(userIds, excludeUserId, callback) {
+  if (!userIds || userIds.length === 0) return callback(null, []);
+  const filtered = userIds.filter((id) => id != excludeUserId);
+  if (filtered.length === 0) return callback(null, []);
+  const placeholders = filtered.map(() => "?").join(",");
+  db.query(
+    `SELECT ut.fcm_token FROM user_tokens ut
+     JOIN users u ON u.id = ut.user_id
+     WHERE ut.user_id IN (${placeholders}) AND u.notification_enabled = 1`,
+    filtered,
+    (err, rows) => {
+      if (err) return callback(err, []);
+      callback(null, rows.map((r) => r.fcm_token).filter(Boolean));
+    }
+  );
+}
+
+/// ✅ HELPER: Get employee IDs in a team (Rule 3: same team only, Rule 4: excludes sender)
+function getTeamEmployeeIds(teamId, excludeUserId, callback) {
+  db.query(
+    `SELECT id FROM users WHERE team_id = ? AND role = 'employee' AND id != ? AND status = 'active'`,
+    [teamId, excludeUserId],
+    (err, rows) => {
+      if (err) return callback(err, []);
+      callback(null, rows.map((r) => r.id));
+    }
+  );
+}
+
+/// ✅ HELPER: Get TL IDs in a team (Rule 3: same team only, Rule 4: excludes sender)
+function getTeamTLIds(teamId, excludeUserId, callback) {
+  db.query(
+    `SELECT id FROM users WHERE team_id = ? AND (role = 'tl' OR role = 'tel') AND id != ? AND status = 'active'`,
+    [teamId, excludeUserId],
+    (err, rows) => {
+      if (err) return callback(err, []);
+      callback(null, rows.map((r) => r.id));
+    }
+  );
+}
+
+////////////////////////////////////////////////////////////
 /// 5. CHAT SYSTEM ROUTES
 ////////////////////////////////////////////////////////////
 
@@ -574,96 +647,41 @@ app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
 
           io.to(`team_${team_id}`).emit("newMessage", newMessageData);
 
-          try {
-            let tokenSql = "";
-            let tokenParams = [];
+          // ✅ Rule 1: TL message → notify same-team employees only
+          // ✅ Rule 2: EMP message → notify TL + same-team colleagues
+          // ✅ Rule 3: team isolation via helpers (same team_id only)
+          // ✅ Rule 4: sender (userId) always excluded
+          const isTL = role === "tl" || role === "tel";
+          const notifBody = message
+            ? `${sender_name}: ${message}`
+            : `${sender_name}: ${finalType === "audio" ? "🎤 Voice message" : "📎 Media message"}`;
+          const notifData = { type: "chat", sender_name: sender_name || "", message: message || "" };
 
-            if (role === "tl" || role === "tel") {
-              tokenSql = `
-                SELECT ut.fcm_token
-                FROM user_tokens ut
-                JOIN users u ON u.id = ut.user_id
-                WHERE u.team_id = ?
-                AND u.notification_enabled = 1
-                AND u.role = 'employee'
-                AND u.id != ?
-              `;
-              tokenParams = [team_id, userId];
-            } else {
-              tokenSql = `
-                SELECT ut.fcm_token
-                FROM user_tokens ut
-                JOIN users u ON u.id = ut.user_id
-                WHERE u.team_id = ?
-                AND u.notification_enabled = 1
-                AND (u.role = 'tl' OR u.role = 'tel')
-                AND u.id != ?
-              `;
-              tokenParams = [team_id, userId];
-            }
-
-            db.query(tokenSql, tokenParams, async (err2, rows) => {
-              if (err2) {
-                console.log("❌ Token Fetch Error:", err2);
-                return res.status(200).json({
-                  message: "Sent successfully ✅",
-                  messageId: result.insertId,
-                  media_url: mediaFile,
-                  data: newMessageData
-                });
+          if (isTL) {
+            // Rule 1: TL → employees in same team
+            getTeamEmployeeIds(team_id, userId, (e1, empIds) => {
+              if (e1 || !empIds.length) {
+                return res.status(200).json({ message: "Sent successfully ✅", messageId: result.insertId, media_url: mediaFile, data: newMessageData });
               }
-
-              const tokens = rows.map(r => r.fcm_token).filter(Boolean);
-
-              if (tokens.length > 0) {
-                try {
-                  await admin.messaging().sendEachForMulticast({
-                    tokens,
-                    notification: {
-                      title: "TEAM WORK TRACKER",
-                      body: message || `${sender_name}: ${finalType === "audio" ? "🎤 Voice message" : "📎 Media message"}`,
-                    },
-                    android: {
-                      priority: "high",
-                      notification: {
-                        channelId: "tl_updates",
-                        priority: "high",
-                        sound: "default",
-                        defaultSound: true,
-                        defaultVibrateTimings: true,
-                        visibility: "public",
-                        icon: "ic_launcher",
-                      },
-                    },
-                    data: {
-                      click_action: "FLUTTER_NOTIFICATION_CLICK",
-                      type: "chat",
-                      sender_name: sender_name || "",
-                      message: message || "",
-                    },
-                  });
-
-                  console.log("✅ Chat notification sent:", tokens.length);
-                } catch (pushErr) {
-                  console.log("⚠️ Push notification error:", pushErr.message);
-                }
-              }
-
-              res.status(200).json({
-                message: "Sent successfully ✅",
-                messageId: result.insertId,
-                media_url: mediaFile,
-                data: newMessageData
+              getFcmTokens(empIds, userId, async (e2, tokens) => {
+                if (!e2 && tokens.length > 0) await sendPushNotification(tokens, "TEAM WORK TRACKER", notifBody, notifData);
+                res.status(200).json({ message: "Sent successfully ✅", messageId: result.insertId, media_url: mediaFile, data: newMessageData });
               });
             });
-          } catch (e) {
-            console.log("❌ Notification Error:", e);
-            res.status(200).json({
-              message: "Sent successfully ✅",
-              messageId: result.insertId,
-              media_url: mediaFile,
-              data: newMessageData
+          } else {
+            // Rule 2: EMP → TL in same team
+            getTeamTLIds(team_id, userId, (e1, tlIds) => {
+              getFcmTokens(tlIds || [], userId, async (e2, tlTokens) => {
+                if (!e2 && tlTokens.length > 0) await sendPushNotification(tlTokens, "TEAM WORK TRACKER", notifBody, notifData);
+              });
             });
+            // Rule 2: EMP → colleagues in same team
+            getTeamEmployeeIds(team_id, userId, (e3, colleagueIds) => {
+              getFcmTokens(colleagueIds || [], userId, async (e4, colTokens) => {
+                if (!e4 && colTokens.length > 0) await sendPushNotification(colTokens, "TEAM WORK TRACKER", notifBody, { ...notifData, type: "colleague_chat" });
+              });
+            });
+            res.status(200).json({ message: "Sent successfully ✅", messageId: result.insertId, media_url: mediaFile, data: newMessageData });
           }
         }
       );
@@ -1071,68 +1089,37 @@ app.post("/work", verifyToken, upload.single("media"), (req, res) => {
         const employeeName =
           !userErr && users && users.length > 0 ? users[0].name : "Employee";
 
-        db.query(
-          `SELECT ut.fcm_token
-           FROM user_tokens ut
-           JOIN users u ON u.id = ut.user_id
-           WHERE u.team_id = ?
-           AND u.notification_enabled = 1
-           AND (u.role = 'tl' OR u.role = 'tel')
-           AND u.id != ?`,
-          [teamId, userId],
-          async (tokErr, rows) => {
-            if (tokErr) {
-              console.log("❌ Work update token fetch error:", tokErr);
-              return res.status(200).json({
-                message: "Work update added ✅",
-                id: result.insertId,
-                status: "pending"
-              });
-            }
+        // ✅ Rule 1+3: TL in same team gets notification
+        // ✅ Rule 2+3: Colleagues (other employees) in same team also get notification
+        // ✅ Rule 4: sender (userId) excluded from both queries
+        res.status(200).json({ message: "Work update added ✅", id: result.insertId, status: "pending" });
 
-            const tokens = rows.map((r) => r.fcm_token).filter(Boolean);
-
-            if (tokens.length > 0) {
-              try {
-                await admin.messaging().sendEachForMulticast({
-                  tokens,
-                  notification: {
-                    title: "TEAM WORK TRACKER",
-                    body: `${employeeName} submitted a work update`,
-                  },
-                  android: {
-                    priority: "high",
-                    notification: {
-                      channelId: "tl_updates",
-                      priority: "high",
-                      sound: "default",
-                      defaultSound: true,
-                      defaultVibrateTimings: true,
-                      visibility: "public",
-                      icon: "ic_launcher",
-                    },
-                  },
-                  data: {
-                    click_action: "FLUTTER_NOTIFICATION_CLICK",
-                    type: "work_update",
-                    sender_name: employeeName,
-                    message: description.trim(),
-                  },
+        getTeamTLIds(teamId, userId, (e1, tlIds) => {
+          if (!e1 && tlIds.length > 0) {
+            getFcmTokens(tlIds, userId, async (e2, tlTokens) => {
+              if (!e2 && tlTokens.length > 0) {
+                await sendPushNotification(tlTokens, "TEAM WORK TRACKER", `${employeeName} submitted a work update`, {
+                  type: "work_update", sender_name: employeeName, message: description.trim(),
                 });
-
-                console.log("✅ Work update notification sent to TL");
-              } catch (pushErr) {
-                console.log("❌ Work update push error:", pushErr);
+                console.log("✅ Work update notification sent to TL(s)");
               }
-            }
-
-            res.status(200).json({
-              message: "Work update added ✅",
-              id: result.insertId,
-              status: "pending"
             });
           }
-        );
+        });
+
+        // ✅ Rule 2: Also notify colleagues (other employees in same team)
+        getTeamEmployeeIds(teamId, userId, (e3, colleagueIds) => {
+          if (!e3 && colleagueIds.length > 0) {
+            getFcmTokens(colleagueIds, userId, async (e4, colTokens) => {
+              if (!e4 && colTokens.length > 0) {
+                await sendPushNotification(colTokens, "TEAM WORK TRACKER", `${employeeName} posted a work update`, {
+                  type: "colleague_update", sender_name: employeeName, message: description.trim(),
+                });
+                console.log("✅ Work update notification sent to colleagues");
+              }
+            });
+          }
+        });
       }
     );
   });
@@ -2031,13 +2018,13 @@ app.post("/tl-announcement-reply", verifyToken, (req, res) => {
           console.log(`✅ Reply saved by ${user.name}`);
           res.json({ message: "Reply sent ✅", id: result.insertId });
 
-          db.query(
-            "SELECT id FROM users WHERE team_id=? AND (role='tl' OR role='tel') LIMIT 1",
-            [announcement.team_id],
-            (err4, tls) => {
-              if (err4 || !tls.length) return;
-              const tlId = tls[0].id;
+          // ✅ Rule 2+3: Notify ALL TLs in same team (not LIMIT 1)
+          // ✅ Rule 4: EMP (user_id) excluded via getTeamTLIds
+          getTeamTLIds(announcement.team_id, user_id, (e4, tlIds) => {
+            if (e4 || !tlIds.length) return;
 
+            // Socket emit to each TL
+            tlIds.forEach((tlId) => {
               io.to(tlId.toString()).emit("new_notification", {
                 sender_name: user.name,
                 emp_id: user.empCode,
@@ -2046,62 +2033,22 @@ app.post("/tl-announcement-reply", verifyToken, (req, res) => {
                 announcement_id: announcement_id,
                 announcement_title: announcement.title,
               });
-
-              db.query(
-                `SELECT ut.fcm_token
-                 FROM user_tokens ut
-                 JOIN users u ON u.id = ut.user_id
-                 WHERE u.id = ?
-                 AND u.notification_enabled = 1`,
-                [tlId],
-                async (tokErr, tokenRows) => {
-                  if (tokErr) {
-                    console.log("❌ TL token fetch error:", tokErr);
-                    return;
-                  }
-
-                  const tokens = tokenRows.map((r) => r.fcm_token).filter(Boolean);
-
-                  if (tokens.length > 0) {
-                    try {
-                      await admin.messaging().sendEachForMulticast({
-                        tokens,
-                        notification: {
-                          title: "TEAM WORK TRACKER",
-                          body: `${user.name}: ${message}`,
-                        },
-                        android: {
-                          priority: "high",
-                          notification: {
-                            channelId: "tl_updates",
-                            priority: "high",
-                            sound: "default",
-                            defaultSound: true,
-                            defaultVibrateTimings: true,
-                            visibility: "public",
-                            icon: "ic_launcher",
-                          },
-                        },
-                        data: {
-                          click_action: "FLUTTER_NOTIFICATION_CLICK",
-                          type: "reply",
-                          sender_name: user.name || "",
-                          message: message || "",
-                          announcement_title: announcement.title || "",
-                        },
-                      });
-
-                      console.log("✅ TL reply push sent");
-                    } catch (pushErr) {
-                      console.log("⚠️ TL reply push error:", pushErr.message);
-                    }
-                  }
-                }
-              );
-
               console.log(`✅ Socket emitted to TL ${tlId}`);
-            }
-          );
+            });
+
+            // FCM push to all TLs in same team
+            getFcmTokens(tlIds, user_id, async (e5, tokens) => {
+              if (!e5 && tokens.length > 0) {
+                await sendPushNotification(tokens, "TEAM WORK TRACKER", `${user.name}: ${message}`, {
+                  type: "reply",
+                  sender_name: user.name || "",
+                  message: message || "",
+                  announcement_title: announcement.title || "",
+                });
+                console.log("✅ TL reply push sent to all TLs");
+              }
+            });
+          });
         }
       );
     });
