@@ -288,7 +288,7 @@ if (!fs.existsSync(uploadDir)) {
 /// DB CONNECTION (UPDATED PRODUCTION VERSION)
 ////////////////////////////////////////////////////////////
 
-//const mysql = require("mysql2");
+const mysql = require("mysql2");
 
 // Railway / Render / Local support
 const dbConfig = process.env.DATABASE_URL
@@ -626,14 +626,22 @@ app.get("/uploads/:filename", (req, res) => {
 ////////////////////////////////////////////////////////////
 /// EMAIL CONFIGURATION
 ////////////////////////////////////////////////////////////
+const nodemailer = require("nodemailer");
+
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 587,
-  secure: false, // TLS
+  secure: false, // STARTTLS (important for port 587)
+
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    pass: process.env.EMAIL_PASS, // MUST be App Password (not normal Gmail password)
   },
+
+  tls: {
+    rejectUnauthorized: false, // helps avoid Render / SSL handshake issues
+  },
+
   connectionTimeout: 30000,
   greetingTimeout: 30000,
   socketTimeout: 30000,
@@ -1838,85 +1846,78 @@ app.post("/google-login", async (req, res) => {
 ////////////////////////////////////////////////////////////
 
 app.post("/forgot-password", async (req, res) => {
-  const { email } = req.body;
-
-  // 🔥 1. EMAIL VALIDATION
-  if (!email || !email.includes("@")) {
-    return res.status(400).json({ message: "Invalid email ❌" });
-  }
-
   try {
+    const { email } = req.body;
+
+    // 🔥 1. EMAIL VALIDATION
+    if (!email || !email.includes("@")) {
+      return res.status(400).json({ message: "Invalid email ❌" });
+    }
+
     // 🔥 2. CHECK USER EXISTS
-    db.query("SELECT id FROM users WHERE email = ?", [email], async (err, result) => {
-      if (err) {
-        console.error("DB Error ❌:", err.message);
-        return res.status(500).json({ message: "DB Error ❌" });
-      }
+    const [users] = await db.query(
+      "SELECT id FROM users WHERE email = ?",
+      [email]
+    );
 
-      if (result.length === 0) {
-        return res.status(404).json({ message: "Email not found ❌" });
-      }
+    if (users.length === 0) {
+      return res.status(404).json({ message: "Email not found ❌" });
+    }
 
-      const now = Date.now();
+    const now = Date.now();
 
-      // 🔥 3. RESEND CONTROL (60 sec)
-      if (otpStore[email]) {
-        const diff = now - otpStore[email].sentAt;
+    // 🔥 3. RESEND CONTROL (60 sec)
+    if (otpStore[email]) {
+      const diff = now - otpStore[email].sentAt;
 
-        if (diff < 60 * 1000) {
-          return res.status(400).json({
-            message: "Wait 60 seconds before requesting new OTP ⏳"
-          });
-        }
-      }
-
-      // 🔥 4. GENERATE OTP
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-      // 🔥 5. SAVE OTP
-      otpStore[email] = {
-        otp,
-        expiry: now + 10 * 60 * 1000, // 10 mins
-        sentAt: now
-      };
-
-      console.log("OTP Generated:", otp);
-
-      // 🔥 6. EMAIL TEMPLATE
-      const mailOptions = {
-        from: `"TeamTracker" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: "Password Reset OTP",
-        html: `
-          <div style="font-family:Arial;padding:20px;border:1px solid #eee;">
-            <h2 style="color:#4CAF50;">Password Reset OTP</h2>
-            <p>Your OTP is:</p>
-            <h1 style="color:#333;">${otp}</h1>
-            <p style="color:red;">Valid for 10 minutes.</p>
-          </div>
-        `
-      };
-
-      // 🔥 7. SEND EMAIL
-      transporter.sendMail(mailOptions, (error, info) => {
-        if (error) {
-          console.error("❌ Email Error:", error.message);
-          return res.status(500).json({
-            message: "Email send failed ❌"
-          });
-        }
-
-        console.log("✅ OTP Email Sent:", info.response);
-
-        res.status(200).json({
-          message: "OTP sent to email ✅"
+      if (diff < 60 * 1000) {
+        return res.status(400).json({
+          message: "Wait 60 seconds before requesting new OTP ⏳"
         });
-      });
+      }
+    }
+
+    // 🔥 4. GENERATE OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // 🔥 5. SAVE OTP
+    otpStore[email] = {
+      otp,
+      expiry: now + 10 * 60 * 1000, // 10 minutes
+      sentAt: now
+    };
+
+    console.log("OTP Generated:", otp);
+
+    // 🔥 6. EMAIL OPTIONS
+    const mailOptions = {
+      from: `"TeamTracker" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Password Reset OTP",
+      html: `
+        <div style="font-family:Arial;padding:20px;border:1px solid #eee;">
+          <h2 style="color:#4CAF50;">Password Reset OTP</h2>
+          <p>Your OTP is:</p>
+          <h1 style="color:#333;">${otp}</h1>
+          <p style="color:red;">Valid for 10 minutes.</p>
+        </div>
+      `
+    };
+
+    // 🔥 7. SEND EMAIL (PROMISIFIED)
+    await transporter.sendMail(mailOptions);
+
+    console.log("✅ OTP Email Sent");
+
+    return res.status(200).json({
+      message: "OTP sent to email ✅"
     });
 
-  } catch (e) {
-    console.error("Server Error ❌:", e);
-    res.status(500).json({ message: "Server Error ❌" });
+  } catch (err) {
+    console.error("❌ Forgot Password Error:", err);
+    return res.status(500).json({
+      message: "Server Error ❌"
+    });
   }
 });
 // 🔥 RESET PASSWORD (UPDATED)
