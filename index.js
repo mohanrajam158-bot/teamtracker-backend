@@ -335,7 +335,8 @@ const dbConfig = process.env.DATABASE_URL
 /// CREATE POOL WITH PROMISE SUPPORT
 ////////////////////////////////////////////////////////////
 
-const db = mysql.createPool(dbConfig).promise();
+//const db = mysql.createPool(dbConfig).promise();
+const db = mysql.createPool(dbConfig);
 
 ////////////////////////////////////////////////////////////
 /// TEST DATABASE CONNECTION
