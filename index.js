@@ -225,31 +225,37 @@ if (!fs.existsSync(uploadDir)) {
 ////////////////////////////////////////////////////////////
 /// TEST DATABASE CONNECTION
 ////////////////////////////////////////////////////////////
-async function testDBConnection() {
-  try {
-    const [rows] = await db.query("SELECT 1 AS ok");
+function testDBConnection() {
+  db.query("SELECT 1 AS ok", (err, rows) => {
+    if (err) {
+      console.log("❌ DB Connection Failed:", err.message);
+      process.exit(1);
+      return;
+    }
 
     console.log("✅ DB Pool Connected Successfully");
     console.log("DB Test Result:", rows);
 
     // Show active database
-    const [dbInfo] = await db.query("SELECT DATABASE() AS db");
+    db.query("SELECT DATABASE() AS db", (err2, dbInfo) => {
+      if (err2) {
+        console.log("⚠️ DB Info query failed:", err2.message);
+        return;
+      }
 
-    console.log("📦 Connected Database:", dbInfo[0].db);
+      console.log("📦 Connected Database:", dbInfo[0].db);
 
-    // Show total users
-    const [userCount] = await db.query(
-      "SELECT COUNT(*) AS total FROM users"
-    );
+      // Show total users
+      db.query("SELECT COUNT(*) AS total FROM users", (err3, userCount) => {
+        if (err3) {
+          console.log("⚠️ User count query failed:", err3.message);
+          return;
+        }
 
-    console.log("👥 Total Users:", userCount[0].total);
-
-  } catch (error) {
-    console.log("❌ DB Connection Failed:", error.message);
-
-    // Optional: exit app if DB fails
-    process.exit(1);
-  }
+        console.log("👥 Total Users:", userCount[0].total);
+      });
+    });
+  });
 }
 
 testDBConnection();
