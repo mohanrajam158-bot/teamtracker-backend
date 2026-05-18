@@ -206,8 +206,39 @@ io.use((socket, next) => {
         return next(new Error("Invalid token ❌"));
       }
 
-      socket.user = decoded;
-      next();
+      const userId = decoded.id || decoded.userId;
+      if (!userId) {
+        return next(new Error("Invalid token"));
+      }
+
+      db.query(
+        "SELECT * FROM users WHERE id = ? LIMIT 1",
+        [userId],
+        (dbErr, rows) => {
+          if (dbErr) {
+            console.log("Socket auth DB error:", dbErr.message);
+            return next(new Error("Auth DB error"));
+          }
+
+          if (!rows || rows.length === 0) {
+            return next(new Error("User deleted or not found"));
+          }
+
+          const dbUser = rows[0];
+          if (dbUser.status === "blocked") {
+            return next(new Error("Account blocked"));
+          }
+
+          socket.user = {
+            ...decoded,
+            ...dbUser,
+            id: dbUser.id,
+            role: dbUser.role || decoded.role,
+            team_id: dbUser.team_id || decoded.team_id || "1",
+          };
+          next();
+        }
+      );
     });
   } catch (e) {
     next(new Error("Auth error ❌"));
@@ -297,13 +328,47 @@ db.query(
 ////////////////////////////////////////////////////////////
 function verifyToken(req, res, next) {
   const bearerHeader = req.headers["authorization"];
-  if (!bearerHeader) return res.status(403).json({ message: "Token Required" });
+  if (!bearerHeader || !bearerHeader.startsWith("Bearer ")) {
+    return res.status(403).json({ message: "Token Required" });
+  }
 
   const token = bearerHeader.split(" ")[1];
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(401).json({ message: "Invalid Token" });
-    req.user = decoded;
-    next();
+
+    const userId = decoded.id || decoded.userId;
+    if (!userId) {
+      return res.status(401).json({ message: "Invalid Token" });
+    }
+
+    db.query(
+      "SELECT * FROM users WHERE id = ? LIMIT 1",
+      [userId],
+      (dbErr, rows) => {
+        if (dbErr) {
+          console.log("Token DB recheck error:", dbErr.message);
+          return res.status(500).json({ message: "Server Error" });
+        }
+
+        if (!rows || rows.length === 0) {
+          return res.status(401).json({ message: "User deleted or not found" });
+        }
+
+        const dbUser = rows[0];
+        if (dbUser.status === "blocked") {
+          return res.status(403).json({ message: "Account blocked" });
+        }
+
+        req.user = {
+          ...decoded,
+          ...dbUser,
+          id: dbUser.id,
+          role: dbUser.role || decoded.role,
+          team_id: dbUser.team_id || decoded.team_id || "1",
+        };
+        next();
+      }
+    );
   });
 }
 
@@ -411,6 +476,82 @@ const upload = multer({
   storage,
   fileFilter,
   limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+db.query(
+  `CREATE TABLE IF NOT EXISTS uploaded_files (
+    filename VARCHAR(255) PRIMARY KEY,
+    original_name VARCHAR(255) NULL,
+    mime_type VARCHAR(120) NULL,
+    size INT NULL,
+    data LONGBLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  (err) => {
+    if (err) console.log("Uploaded files table check failed:", err.message);
+    else console.log("Uploaded files table ready");
+  }
+);
+
+function persistUploadedFile(file) {
+  return new Promise((resolve) => {
+    if (!file || !file.filename || !file.path) return resolve(false);
+
+    fs.readFile(file.path, (readErr, buffer) => {
+      if (readErr) {
+        console.log("Upload backup read failed:", readErr.message);
+        return resolve(false);
+      }
+
+      db.query(
+        `INSERT INTO uploaded_files
+          (filename, original_name, mime_type, size, data)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+          original_name = VALUES(original_name),
+          mime_type = VALUES(mime_type),
+          size = VALUES(size),
+          data = VALUES(data)`,
+        [
+          file.filename,
+          file.originalname || file.filename,
+          file.mimetype || "application/octet-stream",
+          file.size || buffer.length,
+          buffer,
+        ],
+        (dbErr) => {
+          if (dbErr) {
+            console.log("Upload backup DB failed:", dbErr.message);
+            return resolve(false);
+          }
+          resolve(true);
+        }
+      );
+    });
+  });
+}
+
+app.get("/uploads/:filename", (req, res) => {
+  const filename = path.basename(req.params.filename || "");
+  if (!filename) return res.status(404).send("File not found");
+
+  db.query(
+    "SELECT mime_type, data FROM uploaded_files WHERE filename = ? LIMIT 1",
+    [filename],
+    (err, rows) => {
+      if (err) return res.status(500).send("File fetch failed");
+      if (!rows || rows.length === 0) {
+        return res.status(404).send("File not found");
+      }
+
+      res.setHeader(
+        "Content-Type",
+        rows[0].mime_type || "application/octet-stream"
+      );
+      res.setHeader("Cache-Control", "public, max-age=31536000");
+      return res.send(rows[0].data);
+    }
+  );
 });
 
 ////////////////////////////////////////////////////////////
@@ -626,6 +767,8 @@ app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
             console.error("❌ DB Insert Error:", err.message);
             return res.status(500).json({ error: err.message });
           }
+
+          await persistUploadedFile(req.file);
 
           const newMessageData = {
             id: result.insertId,
@@ -1082,6 +1225,8 @@ app.post("/work", verifyToken, upload.single("media"), (req, res) => {
       return res.status(500).json({ message: "DB Error ❌" });
     }
 
+    await persistUploadedFile(req.file);
+
     db.query(
       "SELECT name FROM users WHERE id = ? LIMIT 1",
       [userId],
@@ -1340,10 +1485,12 @@ app.get("/profile", verifyToken, (req, res) => {
   });
 });
 
-app.put("/update-profile", verifyToken, upload.single("image"), (req, res) => {
+app.put("/update-profile", verifyToken, upload.single("image"), async (req, res) => {
   const userId = req.user.id;
   const { name, email, empCode, phone } = req.body;
   const imageName = req.file ? req.file.filename : null;
+
+  await persistUploadedFile(req.file);
 
   let sql = imageName
     ? "UPDATE users SET name=?, email=?, empCode=?, phone=?, profile_image=? WHERE id=?"
@@ -1726,11 +1873,13 @@ app.post("/tl-post", verifyToken, upload.single("media"), (req, res) => {
     VALUES (?, ?, ?, ?, NOW())
   `;
 
-  db.query(insertTL, [title, message, team_id, mediaFile], (err3, result2) => {
+  db.query(insertTL, [title, message, team_id, mediaFile], async (err3, result2) => {
     if (err3) {
       console.log("❌ TL Announcement Insert Error:", err3);
       return res.status(500).json({ error: err3.message });
     }
+
+    await persistUploadedFile(req.file);
 
     console.log("✅ TL Announcement saved:", result2.insertId);
 
