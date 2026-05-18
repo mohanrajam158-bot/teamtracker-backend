@@ -336,7 +336,17 @@ const dbConfig = process.env.DATABASE_URL
 ////////////////////////////////////////////////////////////
 
 //const db = mysql.createPool(dbConfig).promise();
-const db = mysql.createPool(dbConfig);
+//const db = mysql.createPool(dbConfig);
+const mysql = require("mysql2");
+
+const db = mysql.createPool({
+  host: "localhost",
+  user: "root",
+  password: "",
+  database: "your_db",
+});
+
+module.exports = db.promise();
 
 ////////////////////////////////////////////////////////////
 /// TEST DATABASE CONNECTION
