@@ -3,7 +3,7 @@ require("dotenv").config();
 console.log("PASS:", process.env.EMAIL_PASS); */
 const express = require("express");
 const http = require("http");
-const mysql = require("mysql2")
+//const mysql = require("mysql2")
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -288,7 +288,8 @@ if (!fs.existsSync(uploadDir)) {
 /// DB CONNECTION (UPDATED PRODUCTION VERSION)
 ////////////////////////////////////////////////////////////
 
-const mysql = require("mysql2");
+//const mysql = require("mysql2/promise");
+const db = require("./db");
 
 // Railway / Render / Local support
 const dbConfig = process.env.DATABASE_URL
@@ -334,7 +335,7 @@ const dbConfig = process.env.DATABASE_URL
 /// CREATE POOL WITH PROMISE SUPPORT
 ////////////////////////////////////////////////////////////
 
-//const db = mysql.createPool(dbConfig).promise();
+const db = mysql.createPool(dbConfig).promise();
 
 ////////////////////////////////////////////////////////////
 /// TEST DATABASE CONNECTION
@@ -1559,27 +1560,29 @@ app.get("/profile", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const sql = `
-      SELECT name,email,role
-      FROM users
-      WHERE id=?
-    `;
+    const [rows] = await db.query(
+      "SELECT name, email, role FROM users WHERE id = ?",
+      [userId]
+    );
 
-    const [result] = await db.query(sql, [userId]);
+    if (!rows.length) {
+      return res.status(404).json({
+        message: "User not found ❌"
+      });
+    }
 
-    res.json({
-      user: result[0]
+    return res.json({
+      user: rows[0]
     });
 
   } catch (err) {
-    console.log(err);
+    console.log("Profile error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "DB Error ❌"
     });
   }
 });
-
 app.put("/update-profile", verifyToken, upload.single("image"), async (req, res) => {
   const userId = req.user.id;
   const { name, email, empCode, phone } = req.body;
