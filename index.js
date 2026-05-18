@@ -648,7 +648,7 @@ transporter.verify((error, success) => {
   }
 });
 
-console.log("📧 Mail transporter configured"); */
+console.log("📧 Mail transporter configured"); 
 /* const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
