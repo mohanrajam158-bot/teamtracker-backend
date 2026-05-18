@@ -1,7 +1,3 @@
-// ❌ WRONG (Your current version):
-// const mysql = require("mysql2/promise");
-
-// ✅ CORRECT:
 const mysql = require("mysql2");
 
 const db = mysql.createPool({
@@ -13,6 +9,8 @@ const db = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
 });
 
 module.exports = db;
