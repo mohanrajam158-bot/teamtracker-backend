@@ -109,9 +109,10 @@ const messageRateLimiter = rateLimit({
 });
 
 ////////////////////////////////////////////////////////////
-/// DB CONNECTION (MOVED BEFORE SOCKET.IO)
+/// DB CONNECTION (ONLY ONE - Use callback-style mysql2)
 ////////////////////////////////////////////////////////////
 const db = require("./db");
+// ✅ NEVER declare db again! This is the ONLY db instance.
 
 ////////////////////////////////////////////////////////////
 /// SOCKET.IO SETUP
@@ -1431,31 +1432,29 @@ app.get("/dashboard-stats", verifyToken, (req, res) => {
 /// 8. PROFILE ROUTES
 ////////////////////////////////////////////////////////////
 
-app.get("/profile", verifyToken, async (req, res) => {
+app.get("/profile", verifyToken, (req, res) => {
   try {
     const userId = req.user.id;
 
-    const [rows] = await db.query(
+    db.query(
       "SELECT name, email, role FROM users WHERE id = ?",
-      [userId]
+      [userId],
+      (err, rows) => {
+        if (err) {
+          console.log("Profile error:", err);
+          return res.status(500).json({ message: "DB Error ❌" });
+        }
+
+        if (!rows || rows.length === 0) {
+          return res.status(404).json({ message: "User not found ❌" });
+        }
+
+        return res.json({ user: rows[0] });
+      }
     );
-
-    if (!rows.length) {
-      return res.status(404).json({
-        message: "User not found ❌"
-      });
-    }
-
-    return res.json({
-      user: rows[0]
-    });
-
   } catch (err) {
     console.log("Profile error:", err);
-
-    return res.status(500).json({
-      message: "DB Error ❌"
-    });
+    return res.status(500).json({ message: "DB Error ❌" });
   }
 });
 
@@ -1724,7 +1723,7 @@ app.post("/google-login", async (req, res) => {
 /// PASSWORD MANAGEMENT
 ////////////////////////////////////////////////////////////
 
-app.post("/forgot-password", async (req, res) => {
+app.post("/forgot-password", (req, res) => {
   try {
     const { email } = req.body;
 
@@ -1734,69 +1733,73 @@ app.post("/forgot-password", async (req, res) => {
     }
 
     // 🔥 2. CHECK USER EXISTS
-    const [users] = await db.query(
+    db.query(
       "SELECT id FROM users WHERE email = ?",
-      [email]
-    );
+      [email],
+      (err, users) => {
+        if (err) {
+          console.error("❌ Forgot Password DB Error:", err);
+          return res.status(500).json({ message: "Server Error ❌" });
+        }
 
-    if (users.length === 0) {
-      return res.status(404).json({ message: "Email not found ❌" });
-    }
+        if (!users || users.length === 0) {
+          return res.status(404).json({ message: "Email not found ❌" });
+        }
 
-    const now = Date.now();
+        const now = Date.now();
 
-    // 🔥 3. RESEND CONTROL (60 sec)
-    if (otpStore[email]) {
-      const diff = now - otpStore[email].sentAt;
+        // 🔥 3. RESEND CONTROL (60 sec)
+        if (otpStore[email]) {
+          const diff = now - otpStore[email].sentAt;
+          if (diff < 60 * 1000) {
+            return res.status(400).json({
+              message: "Wait 60 seconds before requesting new OTP ⏳"
+            });
+          }
+        }
 
-      if (diff < 60 * 1000) {
-        return res.status(400).json({
-          message: "Wait 60 seconds before requesting new OTP ⏳"
+        // 🔥 4. GENERATE OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+        // 🔥 5. SAVE OTP
+        otpStore[email] = {
+          otp,
+          expiry: now + 10 * 60 * 1000, // 10 minutes
+          sentAt: now
+        };
+
+        console.log("OTP Generated:", otp);
+
+        // 🔥 6. EMAIL OPTIONS
+        const mailOptions = {
+          from: `"TeamTracker" <${process.env.EMAIL_USER}>`,
+          to: email,
+          subject: "Password Reset OTP",
+          html: `
+            <div style="font-family:Arial;padding:20px;border:1px solid #eee;">
+              <h2 style="color:#4CAF50;">Password Reset OTP</h2>
+              <p>Your OTP is:</p>
+              <h1 style="color:#333;">${otp}</h1>
+              <p style="color:red;">Valid for 10 minutes.</p>
+            </div>
+          `
+        };
+
+        // 🔥 7. SEND EMAIL
+        transporter.sendMail(mailOptions, (mailErr) => {
+          if (mailErr) {
+            console.error("❌ Mail send error:", mailErr);
+            return res.status(500).json({ message: "Failed to send OTP ❌" });
+          }
+
+          console.log("✅ OTP Email Sent");
+          return res.status(200).json({ message: "OTP sent to email ✅" });
         });
       }
-    }
-
-    // 🔥 4. GENERATE OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // 🔥 5. SAVE OTP
-    otpStore[email] = {
-      otp,
-      expiry: now + 10 * 60 * 1000, // 10 minutes
-      sentAt: now
-    };
-
-    console.log("OTP Generated:", otp);
-
-    // 🔥 6. EMAIL OPTIONS
-    const mailOptions = {
-      from: `"TeamTracker" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: "Password Reset OTP",
-      html: `
-        <div style="font-family:Arial;padding:20px;border:1px solid #eee;">
-          <h2 style="color:#4CAF50;">Password Reset OTP</h2>
-          <p>Your OTP is:</p>
-          <h1 style="color:#333;">${otp}</h1>
-          <p style="color:red;">Valid for 10 minutes.</p>
-        </div>
-      `
-    };
-
-    // 🔥 7. SEND EMAIL (PROMISIFIED)
-    await transporter.sendMail(mailOptions);
-
-    console.log("✅ OTP Email Sent");
-
-    return res.status(200).json({
-      message: "OTP sent to email ✅"
-    });
-
+    );
   } catch (err) {
     console.error("❌ Forgot Password Error:", err);
-    return res.status(500).json({
-      message: "Server Error ❌"
-    });
+    return res.status(500).json({ message: "Server Error ❌" });
   }
 });
 
@@ -2373,102 +2376,61 @@ app.post("/reject-user", verifyToken, verifyAdmin, (req, res) => {
   );
 });
 
-app.delete("/delete-account", verifyToken, async (req, res) => {
+app.delete("/delete-account", verifyToken, (req, res) => {
   const userId = req.user.id;
 
-  let connection;
+  db.query(
+    "SELECT empCode, profile_image FROM users WHERE id = ? LIMIT 1",
+    [userId],
+    (err, rows) => {
+      if (err) {
+        console.log("❌ Delete account error:", err);
+        return res.status(500).json({ error: err.message });
+      }
 
-  try {
-    // get connection from pool
-    connection = await db.getConnection();
+      if (!rows || !rows.length) {
+        console.log("❌ No user found:", userId);
+        return res.status(404).json({ message: "User not found ❌" });
+      }
 
-    // start transaction
-    await connection.beginTransaction();
+      const empCode = (rows[0].empCode || "").toString().trim();
 
-    // find user
-    const [rows] = await connection.query(
-      "SELECT empCode, profile_image FROM users WHERE id = ? LIMIT 1",
-      [userId]
-    );
+      if (!empCode) {
+        console.log("❌ empCode missing");
+        return res.status(400).json({
+          message: "EmpCode required before deleting account ❌"
+        });
+      }
 
-    if (!rows.length) {
-      await connection.rollback();
+      // Delete in sequence
+      db.query("DELETE FROM user_tokens WHERE user_id = ?", [userId], (err1) => {
+        if (err1) return res.status(500).json({ error: err1.message });
 
-      console.log("❌ No user found:", userId);
+        db.query("DELETE FROM work_updates WHERE user_id = ?", [userId], (err2) => {
+          if (err2) return res.status(500).json({ error: err2.message });
 
-      return res.status(404).json({
-        message: "User not found ❌"
+          db.query("DELETE FROM tl_announcement_reads WHERE user_id = ?", [userId], (err3) => {
+            if (err3) return res.status(500).json({ error: err3.message });
+
+            db.query("DELETE FROM tl_announcement_replies WHERE user_id = ?", [userId], (err4) => {
+              if (err4) return res.status(500).json({ error: err4.message });
+
+              db.query("DELETE FROM team_messages WHERE sender_id = ?", [userId], (err5) => {
+                if (err5) return res.status(500).json({ error: err5.message });
+
+                db.query("DELETE FROM users WHERE id = ?", [userId], (err6) => {
+                  if (err6) return res.status(500).json({ error: err6.message });
+
+                  console.log("✅ User deleted successfully:", userId);
+                  return res.json({ message: "Account deleted ✅" });
+                });
+              });
+            });
+          });
+        });
       });
     }
-
-    const empCode = (rows[0].empCode || "").toString().trim();
-
-    if (!empCode) {
-      await connection.rollback();
-
-      console.log("❌ empCode missing");
-
-      return res.status(400).json({
-        message: "EmpCode required before deleting account ❌"
-      });
-    }
-
-    // delete user related data
-    await connection.query(
-      "DELETE FROM user_tokens WHERE user_id = ?",
-      [userId]
-    );
-
-    await connection.query(
-      "DELETE FROM work_updates WHERE user_id = ?",
-      [userId]
-    );
-
-    await connection.query(
-      "DELETE FROM tl_announcement_reads WHERE user_id = ?",
-      [userId]
-    );
-
-    await connection.query(
-      "DELETE FROM tl_announcement_replies WHERE user_id = ?",
-      [userId]
-    );
-
-    await connection.query(
-      "DELETE FROM team_messages WHERE sender_id = ?",
-      [userId]
-    );
-
-    await connection.query(
-      "DELETE FROM users WHERE id = ?",
-      [userId]
-    );
-
-    // commit all deletes
-    await connection.commit();
-
-    console.log("✅ User deleted successfully:", userId);
-
-    return res.json({
-      message: "Account deleted ✅"
-    });
-
-  } catch (err) {
-    console.log("❌ Delete account error:", err);
-
-    if (connection) {
-      await connection.rollback();
-    }
-
-    return res.status(500).json({
-      error: err.message
-    });
-
-  } finally {
-    if (connection) {
-      connection.release();
-    }
-  }
+  );
 });
 
 app.get("/mail-test", async (req, res) => {
