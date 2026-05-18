@@ -288,7 +288,7 @@ if (!fs.existsSync(uploadDir)) {
 /// DB CONNECTION (UPDATED PRODUCTION VERSION)
 ////////////////////////////////////////////////////////////
 
-const mysql = require("mysql2");
+//const mysql = require("mysql2");
 
 // Railway / Render / Local support
 const dbConfig = process.env.DATABASE_URL
