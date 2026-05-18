@@ -285,16 +285,28 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 ////////////////////////////////////////////////////////////
-/// DB CONNECTION
+/// DB CONNECTION (UPDATED PRODUCTION VERSION)
 ////////////////////////////////////////////////////////////
+
+const mysql = require("mysql2");
+
+// Railway / Render / Local support
 const dbConfig = process.env.DATABASE_URL
   ? {
       uri: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      connectTimeout: 10000,
+      ssl: {
+        rejectUnauthorized: false,
+      },
+
+      // Pool settings
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
+
+      // Timeout settings
+      connectTimeout: 10000,
+
+      // Keep alive
       enableKeepAlive: true,
       keepAliveInitialDelay: 0,
     }
@@ -304,23 +316,80 @@ const dbConfig = process.env.DATABASE_URL
       password: process.env.DB_PASSWORD || "newpassword",
       database: process.env.DB_NAME || "team_tracker",
       port: process.env.DB_PORT || 3306,
-      connectTimeout: 10000,
+
+      // Pool settings
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
+
+      // Timeout
+      connectTimeout: 10000,
+
+      // Keep alive
       enableKeepAlive: true,
       keepAliveInitialDelay: 0,
     };
 
-const db = mysql.createPool(dbConfig);
+////////////////////////////////////////////////////////////
+/// CREATE POOL WITH PROMISE SUPPORT
+////////////////////////////////////////////////////////////
 
-db.query(
-  { sql: "SELECT 1 AS ok", timeout: 10000 },
-  (err) => {
-    if (err) console.log("❌ DB Pool Test Failed:", err.message);
-    else console.log("✅ DB Pool Connected");
+const db = mysql.createPool(dbConfig).promise();
+
+////////////////////////////////////////////////////////////
+/// TEST DATABASE CONNECTION
+////////////////////////////////////////////////////////////
+
+async function testDBConnection() {
+  try {
+    const [rows] = await db.query("SELECT 1 AS ok");
+
+    console.log("✅ DB Pool Connected Successfully");
+    console.log("DB Test Result:", rows);
+
+    // Show active database
+    const [dbInfo] = await db.query("SELECT DATABASE() AS db");
+
+    console.log("📦 Connected Database:", dbInfo[0].db);
+
+    // Show total users
+    const [userCount] = await db.query(
+      "SELECT COUNT(*) AS total FROM users"
+    );
+
+    console.log("👥 Total Users:", userCount[0].total);
+
+  } catch (error) {
+    console.log("❌ DB Connection Failed:", error.message);
+
+    // Optional: exit app if DB fails
+    process.exit(1);
   }
-);
+}
+
+testDBConnection();
+
+////////////////////////////////////////////////////////////
+/// HANDLE UNEXPECTED DB ERRORS
+////////////////////////////////////////////////////////////
+
+db.on?.("error", (err) => {
+  console.log("❌ MySQL Pool Error:", err.message);
+
+  if (err.code === "PROTOCOL_CONNECTION_LOST") {
+    console.log("⚠️ Database connection lost.");
+  }
+
+  if (err.code === "ER_CON_COUNT_ERROR") {
+    console.log("⚠️ Too many DB connections.");
+  }
+
+  if (err.code === "ECONNREFUSED") {
+    console.log("⚠️ Database connection refused.");
+  }
+});
+
+module.exports = db;
 
 
 ////////////////////////////////////////////////////////////
@@ -557,23 +626,30 @@ app.get("/uploads/:filename", (req, res) => {
 ////////////////////////////////////////////////////////////
 /// EMAIL CONFIGURATION
 ////////////////////////////////////////////////////////////
-/* const transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 587,
-  secure: false,
-  requireTLS: true,
-  family: 4,
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 45000,
+  secure: false, // TLS
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
+});
+
+// Verify mail server connection
+transporter.verify((error, success) => {
+  if (error) {
+    console.log("❌ Mail Error:", error);
+  } else {
+    console.log("✅ Mail server ready");
+  }
 });
 
 console.log("📧 Mail transporter configured"); */
-const transporter = nodemailer.createTransport({
+/* const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
@@ -591,7 +667,7 @@ const transporter = nodemailer.createTransport({
     console.log("✅ Mail server ready");
   }
 }); 
-
+ */
 ////////////////////////////////////////////////////////////
 /// OTP STORE (In-memory, TODO: Move to DB)
 ////////////////////////////////////////////////////////////
@@ -1471,18 +1547,29 @@ app.get("/dashboard-stats", verifyToken, (req, res) => {
 /// 8. PROFILE ROUTES
 ////////////////////////////////////////////////////////////
 
-app.get("/profile", verifyToken, (req, res) => {
-  const userId = req.user.id;
-  const sql = `
-    SELECT name, email, role, profile_image, empCode, phone, theme_preference, team_id
-    FROM users
-    WHERE id = ?
-  `;
+app.get("/profile", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
 
-  db.query(sql, [userId], (err, result) => {
-    if (err) return res.status(500).json({ message: "DB Error ❌" });
-    res.json({ user: result[0] });
-  });
+    const sql = `
+      SELECT name,email,role
+      FROM users
+      WHERE id=?
+    `;
+
+    const [result] = await db.query(sql, [userId]);
+
+    res.json({
+      user: result[0]
+    });
+
+  } catch (err) {
+    console.log(err);
+
+    res.status(500).json({
+      message: "DB Error ❌"
+    });
+  }
 });
 
 app.put("/update-profile", verifyToken, upload.single("image"), async (req, res) => {
@@ -2406,60 +2493,102 @@ app.post("/reject-user", verifyToken, verifyAdmin, (req, res) => {
   );
 });
 
-app.delete("/delete-account", verifyToken, (req, res) => {
+app.delete("/delete-account", verifyToken, async (req, res) => {
   const userId = req.user.id;
 
-  db.query(
-    "SELECT empCode, profile_image FROM users WHERE id = ? LIMIT 1",
-    [userId],
-    (findErr, rows) => {
-      if (findErr) {
-        console.log("❌ Find user error:", findErr);
-        return res.status(500).json({ error: findErr.message });
-      }
+  let connection;
 
-      if (!rows.length) {
-        console.log("❌ No user found for id:", userId);
-        return res.status(404).json({ message: "User not found ❌" });
-      }
+  try {
+    // get connection from pool
+    connection = await db.getConnection();
 
-      const empCode = (rows[0].empCode || "").toString().trim();
+    // start transaction
+    await connection.beginTransaction();
 
-      if (!empCode) {
-        console.log("❌ empCode missing");
-        return res.status(400).json({
-          message: "EmpCode required before deleting account ❌"
-        });
-      }
+    // find user
+    const [rows] = await connection.query(
+      "SELECT empCode, profile_image FROM users WHERE id = ? LIMIT 1",
+      [userId]
+    );
 
-      db.query("DELETE FROM user_tokens WHERE user_id = ?", [userId], (err1) => {
-        if (err1) return res.status(500).json({ error: err1.message });
+    if (!rows.length) {
+      await connection.rollback();
 
-        db.query("DELETE FROM work_updates WHERE user_id = ?", [userId], (err2) => {
-          if (err2) return res.status(500).json({ error: err2.message });
+      console.log("❌ No user found:", userId);
 
-          db.query("DELETE FROM tl_announcement_reads WHERE user_id = ?", [userId], (err3) => {
-            if (err3) return res.status(500).json({ error: err3.message });
-
-            db.query("DELETE FROM tl_announcement_replies WHERE user_id = ?", [userId], (err4) => {
-              if (err4) return res.status(500).json({ error: err4.message });
-
-              db.query("DELETE FROM team_messages WHERE sender_id = ?", [userId], (err5) => {
-                if (err5) return res.status(500).json({ error: err5.message });
-
-                db.query("DELETE FROM users WHERE id = ?", [userId], (err6) => {
-                  if (err6) return res.status(500).json({ error: err6.message });
-
-                  console.log("✅ User deleted:", userId);
-                  return res.json({ message: "Account deleted ✅" });
-                });
-              });
-            });
-          });
-        });
+      return res.status(404).json({
+        message: "User not found ❌"
       });
     }
-  );
+
+    const empCode = (rows[0].empCode || "").toString().trim();
+
+    if (!empCode) {
+      await connection.rollback();
+
+      console.log("❌ empCode missing");
+
+      return res.status(400).json({
+        message: "EmpCode required before deleting account ❌"
+      });
+    }
+
+    // delete user related data
+    await connection.query(
+      "DELETE FROM user_tokens WHERE user_id = ?",
+      [userId]
+    );
+
+    await connection.query(
+      "DELETE FROM work_updates WHERE user_id = ?",
+      [userId]
+    );
+
+    await connection.query(
+      "DELETE FROM tl_announcement_reads WHERE user_id = ?",
+      [userId]
+    );
+
+    await connection.query(
+      "DELETE FROM tl_announcement_replies WHERE user_id = ?",
+      [userId]
+    );
+
+    await connection.query(
+      "DELETE FROM team_messages WHERE sender_id = ?",
+      [userId]
+    );
+
+    await connection.query(
+      "DELETE FROM users WHERE id = ?",
+      [userId]
+    );
+
+    // commit all deletes
+    await connection.commit();
+
+    console.log("✅ User deleted successfully:", userId);
+
+    return res.json({
+      message: "Account deleted ✅"
+    });
+
+  } catch (err) {
+    console.log("❌ Delete account error:", err);
+
+    if (connection) {
+      await connection.rollback();
+    }
+
+    return res.status(500).json({
+      error: err.message
+    });
+
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
 });
 
 app.get("/mail-test", async (req, res) => {
