@@ -3,7 +3,6 @@ require("dotenv").config();
 console.log("PASS:", process.env.EMAIL_PASS); */
 const express = require("express");
 const http = require("http");
-//const mysql = require("mysql2")
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -288,7 +287,6 @@ if (!fs.existsSync(uploadDir)) {
 /// DB CONNECTION (UPDATED PRODUCTION VERSION)
 ////////////////////////////////////////////////////////////
 
-//const mysql = require("mysql2/promise");
 const db = require("./db");
 
 // Railway / Render / Local support
@@ -392,49 +390,62 @@ module.exports = db;
 /// JWT VERIFY MIDDLEWARE
 ////////////////////////////////////////////////////////////
 function verifyToken(req, res, next) {
-  const bearerHeader = req.headers["authorization"];
-  if (!bearerHeader || !bearerHeader.startsWith("Bearer ")) {
-    return res.status(403).json({ message: "Token Required" });
-  }
+  try {
+    const bearerHeader = req.headers["authorization"];
 
-  const token = bearerHeader.split(" ")[1];
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(401).json({ message: "Invalid Token" });
-
-    const userId = decoded.id || decoded.userId;
-    if (!userId) {
-      return res.status(401).json({ message: "Invalid Token" });
+    if (!bearerHeader || !bearerHeader.startsWith("Bearer ")) {
+      return res.status(403).json({ message: "Token Required" });
     }
 
-    db.query(
-      "SELECT * FROM users WHERE id = ? LIMIT 1",
-      [userId],
-      (dbErr, rows) => {
-        if (dbErr) {
-          console.log("Token DB recheck error:", dbErr.message);
-          return res.status(500).json({ message: "Server Error" });
-        }
+    const token = bearerHeader.split(" ")[1];
 
-        if (!rows || rows.length === 0) {
-          return res.status(401).json({ message: "User deleted or not found" });
-        }
-
-        const dbUser = rows[0];
-        if (dbUser.status === "blocked") {
-          return res.status(403).json({ message: "Account blocked" });
-        }
-
-        req.user = {
-          ...decoded,
-          ...dbUser,
-          id: dbUser.id,
-          role: dbUser.role || decoded.role,
-          team_id: dbUser.team_id || decoded.team_id || "1",
-        };
-        next();
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ message: "Invalid Token" });
       }
-    );
-  });
+
+      const userId = decoded?.id || decoded?.userId;
+
+      if (!userId) {
+        return res.status(401).json({ message: "Invalid Token Payload" });
+      }
+
+      db.query(
+        "SELECT * FROM users WHERE id = ? LIMIT 1",
+        [userId],
+        (dbErr, rows) => {
+          if (dbErr) {
+            console.log("Token DB recheck error:", dbErr.message);
+            return res.status(500).json({ message: "Server Error" });
+          }
+
+          if (!rows || rows.length === 0) {
+            return res.status(401).json({ message: "User deleted or not found" });
+          }
+
+          const dbUser = rows[0];
+
+          if (dbUser.status === "blocked") {
+            return res.status(403).json({ message: "Account blocked" });
+          }
+
+          req.user = {
+            id: dbUser.id,
+            name: dbUser.name,
+            email: dbUser.email,
+            role: dbUser.role || decoded.role,
+            team_id: dbUser.team_id || decoded.team_id || "1",
+            status: dbUser.status,
+          };
+
+          next();
+        }
+      );
+    });
+  } catch (error) {
+    console.log("verifyToken crash:", error.message);
+    return res.status(500).json({ message: "Auth Error" });
+  }
 }
 
 function verifyAdmin(req, res, next) {
@@ -1155,12 +1166,9 @@ app.post("/login", loginLimiter, async (req, res) => {
     console.log("📡 Running DB query...");
 
     db.query(
-      {
-        sql: "SELECT * FROM users WHERE email = ?",
-        timeout: 10000,
-      },
-      [email],
-      async (err, result) => {
+  "SELECT * FROM users WHERE id = ? LIMIT 1",
+  [userId],
+  (dbErr, rows) => {
         console.log("📊 DB response received");
 
         if (err) {
