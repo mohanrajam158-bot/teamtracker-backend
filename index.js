@@ -109,75 +109,12 @@ const messageRateLimiter = rateLimit({
 });
 
 ////////////////////////////////////////////////////////////
-/// SOCKET.IO SETUP (FIX: Matching CORS)
+/// DB CONNECTION (MOVED BEFORE SOCKET.IO)
 ////////////////////////////////////////////////////////////
-/* const io = require("socket.io")(server, {
-  cors: {
-    origin: ALLOWED_ORIGINS,
-    methods: ["GET", "POST"],
-    credentials: true
-  },
-});
-
-io.use((socket, next) => {
-  try {
-    const token = socket.handshake.auth?.token;
-
-    if (!token) {
-      return next(new Error("No token ❌"));
-    }
-
-    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-      if (err) {
-        return next(new Error("Invalid token ❌"));
-      }
-
-      socket.user = decoded;
-      next();
-    });
-  } catch (e) {
-    next(new Error("Auth error ❌"));
-  }
-});
-
-io.on("connection", (socket) => {
-  console.log("🔥 User connected:", socket.id);
-
-  socket.on("joinRoom", () => {
-    const team_id = socket.user.team_id;
-    socket.join(`team_${team_id}`);
-    console.log("✅ Joined secure room:", team_id);
-  });
-
-  socket.on("joinUser", (user_id) => {
-    socket.join(user_id.toString());
-    console.log("✅ User joined personal room:", user_id);
-  });
-
-  socket.on("disconnect", () => {
-    console.log("❌ User disconnected:", socket.id);
-  });
-});
+const db = require("./db");
 
 ////////////////////////////////////////////////////////////
-/// CORS SETUP (FIX: Consistent with Socket)
-////////////////////////////////////////////////////////////
-app.use(cors({
-  origin: ALLOWED_ORIGINS,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
-}));
- 
-
-app.use(cors({
-  origin: "*",
-  methods: ["GET","POST","PUT","DELETE"],
-  allowedHeaders: ["Content-Type","Authorization"]
-})); */
-
-////////////////////////////////////////////////////////////
-/// CORS + SOCKET.IO SETUP
+/// SOCKET.IO SETUP
 ////////////////////////////////////////////////////////////
 const corsOptions = {
   origin: true,
@@ -268,6 +205,7 @@ io.on("connection", (socket) => {
 ////////////////////////////////////////////////////////////
 //app.use("/login", loginLimiter);
 app.use("/send-message", messageRateLimiter);
+
 ////////////////////////////////////////////////////////////
 /// MIDDLEWARE SETUP
 ////////////////////////////////////////////////////////////
@@ -284,56 +222,8 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 ////////////////////////////////////////////////////////////
-/// DB CONNECTION (UPDATED PRODUCTION VERSION)
-////////////////////////////////////////////////////////////
-
-const db = require("./db");
-
-// Railway / Render / Local support
-const dbConfig = process.env.DATABASE_URL
-  ? {
-      uri: process.env.DATABASE_URL,
-      ssl: {
-        rejectUnauthorized: false,
-      },
-
-      // Pool settings
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-
-      // Timeout settings
-      connectTimeout: 10000,
-
-      // Keep alive
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 0,
-    }
-  : {
-      host: process.env.DB_HOST || "localhost",
-      user: process.env.DB_USER || "root",
-      password: process.env.DB_PASSWORD || "newpassword",
-      database: process.env.DB_NAME || "team_tracker",
-      port: process.env.DB_PORT || 3306,
-
-      // Pool settings
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-
-      // Timeout
-      connectTimeout: 10000,
-
-      // Keep alive
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 0,
-    };
-
-
-////////////////////////////////////////////////////////////
 /// TEST DATABASE CONNECTION
 ////////////////////////////////////////////////////////////
-
 async function testDBConnection() {
   try {
     const [rows] = await db.query("SELECT 1 AS ok");
@@ -366,7 +256,6 @@ testDBConnection();
 ////////////////////////////////////////////////////////////
 /// HANDLE UNEXPECTED DB ERRORS
 ////////////////////////////////////////////////////////////
-
 db.on?.("error", (err) => {
   console.log("❌ MySQL Pool Error:", err.message);
 
@@ -382,9 +271,6 @@ db.on?.("error", (err) => {
     console.log("⚠️ Database connection refused.");
   }
 });
-
-module.exports = db;
-
 
 ////////////////////////////////////////////////////////////
 /// JWT VERIFY MIDDLEWARE
@@ -469,7 +355,8 @@ if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
 
 if (!APPLE_BUNDLE_ID) {
   console.warn("⚠️ APPLE_BUNDLE_ID missing in .env. Apple login may fail.");
-} 
+}
+
 const appleJwks = createRemoteJWKSet(
   new URL("https://appleid.apple.com/auth/keys")
 );
@@ -479,7 +366,7 @@ function sha256Hex(value) {
 }
 
 ////////////////////////////////////////////////////////////
-/// MULTER STORAGE (FIX: Better organization)
+/// MULTER STORAGE
 ////////////////////////////////////////////////////////////
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, './uploads'),
@@ -633,8 +520,6 @@ app.get("/uploads/:filename", (req, res) => {
 ////////////////////////////////////////////////////////////
 /// EMAIL CONFIGURATION
 ////////////////////////////////////////////////////////////
-//const nodemailer = require("nodemailer");
-
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 587,
@@ -663,26 +548,8 @@ transporter.verify((error, success) => {
   }
 });
 
-console.log("📧 Mail transporter configured"); 
-/* const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
+console.log("📧 Mail transporter configured");
 
- transporter.verify((error, success) => {
-  if (error) {
-    console.log("❌ Mail Error:", error);
-  } else {
-    console.log("✅ Mail server ready");
-  }
-}); 
- */
 ////////////////////////////////////////////////////////////
 /// OTP STORE (In-memory, TODO: Move to DB)
 ////////////////////////////////////////////////////////////
@@ -1137,6 +1004,7 @@ app.post("/register", async (req, res) => {
   });
 });
 
+// ✅ FIXED LOGIN ROUTE - All issues fixed
 app.post("/login", loginLimiter, async (req, res) => {
   console.log("🔥 LOGIN API HIT");
 
@@ -1165,10 +1033,13 @@ app.post("/login", loginLimiter, async (req, res) => {
 
     console.log("📡 Running DB query...");
 
+    // ✅ FIX 1: Changed WHERE id to WHERE email
+    // ✅ FIX 2: Changed parameter from [userId] to [email]
+    // ✅ FIX 3: Added async keyword to callback function
     db.query(
-  "SELECT * FROM users WHERE id = ? LIMIT 1",
-  [userId],
-  (dbErr, rows) => {
+      "SELECT * FROM users WHERE email = ? LIMIT 1",
+      [email],
+      async (err, result) => {
         console.log("📊 DB response received");
 
         if (err) {
@@ -1190,6 +1061,7 @@ app.post("/login", loginLimiter, async (req, res) => {
           }
 
           console.log("🔐 Checking password...");
+          // ✅ NOW await WORKS because callback is async
           const isMatch = await bcrypt.compare(password, user.password);
 
           if (!isMatch) {
@@ -1586,6 +1458,7 @@ app.get("/profile", verifyToken, async (req, res) => {
     });
   }
 });
+
 app.put("/update-profile", verifyToken, upload.single("image"), async (req, res) => {
   const userId = req.user.id;
   const { name, email, empCode, phone } = req.body;
@@ -1759,7 +1632,7 @@ app.post("/apple-login", async (req, res) => {
 
           const token = jwt.sign(
             { id: user.id, role: user.role, team_id: finalTeamId },
-            process.env.JWT_SECRET 
+            process.env.JWT_SECRET
           );
 
           return res.json({
@@ -1926,7 +1799,7 @@ app.post("/forgot-password", async (req, res) => {
     });
   }
 });
-// 🔥 RESET PASSWORD (UPDATED)
+
 app.post("/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
   const stored = otpStore[email];
@@ -2614,7 +2487,6 @@ app.get("/mail-test", async (req, res) => {
   }
 });
 
-
 ////////////////////////////////////////////////////////////
 /// HEALTH CHECK
 ////////////////////////////////////////////////////////////
@@ -2663,18 +2535,11 @@ db.query(
   }
 );
 
-
 ////////////////////////////////////////////////////////////
 /// ✅ SERVER START
 ////////////////////////////////////////////////////////////
-/* server.listen(5000, "0.0.0.0", () => {
-  console.log("🚀 Server running on port 5000");
-});
- */
-
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
