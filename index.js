@@ -959,6 +959,7 @@ app.delete("/delete-message-for-everyone", verifyToken, (req, res) => {
 
 app.post("/register", async (req, res) => {
   const { name, email, password, role, team_id } = req.body;
+  const finalTeamId = team_id || 1;
 
   const finalRole = (role || "employee").toString().trim().toLowerCase();
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -982,14 +983,14 @@ app.post("/register", async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?)
     `;
 
-    db.query(sql, [name, email, hashedPassword, finalRole, finalStatus, team_id], (err, result) => {
+    db.query(sql, [name, email, hashedPassword, finalRole, finalStatus, finalTeamId], (err, result) => {
       if (err) {
         console.log("❌ Registration Error:", err);
         return res.status(500).json({ message: "Registration Failed ❌" });
       }
 
       const token = jwt.sign(
-        { id: result.insertId, role: finalRole, team_id },
+        { id: result.insertId, role: finalRole, team_id: finalTeamId },
         process.env.JWT_SECRET
       );
 
