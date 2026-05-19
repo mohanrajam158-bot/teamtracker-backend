@@ -983,17 +983,16 @@ app.post("/register", async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?)
     `;
 
-    db.query(sql, [name, email, hashedPassword, finalRole, finalStatus, finalTeamId], (err, result) => {
+    db.query(sql, [name, email, hashedPassword, finalRole, finalStatus, team_id], (err, result) => {
       if (err) {
         console.log("❌ Registration Error:", err);
         return res.status(500).json({ message: "Registration Failed ❌" });
       }
 
       const token = jwt.sign(
-        { id: result.insertId, role: finalRole, team_id: finalTeamId },
-        process.env.JWT_SECRET
-      );
-
+  { id: result.insertId, role: finalRole, team_id },
+  process.env.JWT_SECRET
+);
       res.json({
         message: finalRole === "tl"
           ? "Registered successfully. Wait for admin approval ⏳"
