@@ -15,6 +15,7 @@ const rateLimit = require("express-rate-limit");
 const validator = require("validator");
 const nodemailer = require('nodemailer');
 const admin = require("firebase-admin");
+const { v4: uuidv4 } = require("uuid");
 
 ////////////////////////////////////////////////////////////
 /// ✅ APP INITIALIZATION (MOVED TO TOP)
@@ -644,6 +645,7 @@ function getTeamTLIds(teamId, excludeUserId, callback) {
 ////////////////////////////////////////////////////////////
 
 app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
+  const messageId = uuidv4();
   const userId = req.user.id;
   const team_id = req.user.team_id;
 
@@ -711,14 +713,15 @@ app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
       const finalSenderId = dbUser.id.toString();
 
       const sql = `
-        INSERT INTO team_messages
-        (sender_id, sender_user_id, sender_name, message, team_id, role, message_type, media_url, reply_to_id, reply_to_message, reply_to_sender)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
+  INSERT INTO team_messages
+  (id, sender_id, sender_user_id, sender_name, message, team_id, role, message_type, media_url, reply_to_id, reply_to_message, reply_to_sender)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
 
       db.query(
         sql,
         [
+          messageId,
           finalSenderId,
           userId,
           sender_name,
@@ -740,7 +743,7 @@ app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
           await persistUploadedFile(req.file);
 
           const newMessageData = {
-            id: result.insertId,
+            id: messageId,
             sender_id: finalSenderId,
             sender_user_id: dbUser.id,
             sender_name,
@@ -962,57 +965,138 @@ app.delete("/delete-message-for-everyone", verifyToken, (req, res) => {
 ////////////////////////////////////////////////////////////
 
 app.post("/register", async (req, res) => {
-  const { name, email, password, role, team_id } = req.body;
-  const finalTeamId = team_id || 1;
+  try {
+    const { name, email, password, role, team_id } = req.body;
 
-  const finalRole = (role || "employee").toString().trim().toLowerCase();
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const finalStatus = finalRole === "tl" ? "pending" : "active";
-  const checkSql = "SELECT * FROM users WHERE email = ?";
-
-  db.query(checkSql, [email], (checkErr, checkResult) => {
-    if (checkErr) {
-      console.log("❌ Registration Check Error:", checkErr);
-      return res.status(500).json({ message: "Registration Failed ❌" });
-    }
-
-    if (checkResult.length > 0) {
+    // ✅ Basic validation
+    if (!name || !email || !password) {
       return res.status(400).json({
-        message: "Email already registered ❌"
+        message: "Name, email and password required ❌",
       });
     }
 
-    const sql = `
-      INSERT INTO users (name, email, password, role, status, team_id)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `;
+    // ✅ Team ID default
+    const finalTeamId = team_id || 1;
 
-    db.query(sql, [name, email, hashedPassword, finalRole, finalStatus, team_id], (err, result) => {
-      if (err) {
-        console.log("❌ Registration Error:", err);
-        return res.status(500).json({ message: "Registration Failed ❌" });
+    // ✅ Role normalize
+    const finalRole = (role || "employee")
+      .toString()
+      .trim()
+      .toLowerCase();
+
+    // ✅ TL pending approval
+    const finalStatus =
+      finalRole === "tl" ? "pending" : "active";
+
+    // ✅ Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // ✅ Check existing email
+    const checkSql =
+      "SELECT id FROM users WHERE email = ? LIMIT 1";
+
+    db.query(checkSql, [email], (checkErr, checkResult) => {
+      if (checkErr) {
+        console.log("❌ Registration Check Error:", checkErr);
+
+        return res.status(500).json({
+          message: "Registration Failed ❌",
+        });
       }
 
-      const token = jwt.sign(
-  { id: result.insertId, role: finalRole, team_id },
-  process.env.JWT_SECRET
-);
-      res.json({
-        message: finalRole === "tl"
-          ? "Registered successfully. Wait for admin approval ⏳"
-          : "Registered Successfully ✅",
-        token,
-        user: {
-          id: result.insertId,
+      // ✅ Email already exists
+      if (checkResult.length > 0) {
+        return res.status(400).json({
+          message: "Email already registered ❌",
+        });
+      }
+
+      // ✅ Insert user with TEAM ID
+      const sql = `
+        INSERT INTO users
+        (
           name,
           email,
-          role: finalRole,
-          status: finalStatus,
-          team_id: team_id,
+          password,
+          role,
+          status,
+          team_id,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, NOW())
+      `;
+
+      db.query(
+        sql,
+        [
+          name,
+          email,
+          hashedPassword,
+          finalRole,
+          finalStatus,
+          finalTeamId,
+        ],
+        (err, result) => {
+          if (err) {
+            console.log("❌ Registration Error:", err);
+
+            return res.status(500).json({
+              message: "Registration Failed ❌",
+              error: err.message,
+            });
+          }
+
+          // ✅ JWT token
+          const token = jwt.sign(
+            {
+              id: result.insertId,
+              role: finalRole,
+              team_id: finalTeamId,
+            },
+            process.env.JWT_SECRET,
+            {
+              expiresIn: "30d",
+            }
+          );
+
+          // ✅ Success response
+          res.status(201).json({
+            success: true,
+
+            message:
+              finalRole === "tl"
+                ? "Registered successfully. Wait for admin approval ⏳"
+                : "Registered Successfully ✅",
+
+            token,
+
+            user: {
+              id: result.insertId,
+              name,
+              email,
+              role: finalRole,
+              status: finalStatus,
+              team_id: finalTeamId,
+            },
+          });
+
+          console.log(
+            "✅ New User Registered:",
+            email,
+            "Team:",
+            finalTeamId
+          );
         }
-      });
+      );
     });
-  });
+  } catch (error) {
+    console.log("❌ Register API Error:", error);
+
+    res.status(500).json({
+      message: "Server Error ❌",
+      error: error.message,
+    });
+  }
 });
 
 // ✅ FIXED LOGIN ROUTE - All issues fixed
