@@ -647,7 +647,7 @@ function getTeamTLIds(teamId, excludeUserId, callback) {
 app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
   const messageId = uuidv4();
   const userId = req.user.id;
-  const team_id = req.user.team_id;
+  const team_id = req.user.team_id || req.body.team_id;
 
   const {
     sender_name,
@@ -714,8 +714,8 @@ app.post("/send-message", verifyToken, upload.single("media"), (req, res) => {
 
       const sql = `
   INSERT INTO team_messages
-  (id, sender_id, sender_user_id, sender_name, message, team_id, role, message_type, media_url, reply_to_id, reply_to_message, reply_to_sender)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  (id, sender_id, sender_user_id, sender_name, message, team_id, role, message_type, media_url, reply_to_id, reply_to_message, reply_to_sender, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 `;
 
       db.query(
