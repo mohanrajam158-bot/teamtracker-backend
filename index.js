@@ -1531,7 +1531,10 @@ app.get("/profile", verifyToken, (req, res) => {
     const userId = req.user.id;
 
     db.query(
-      "SELECT name, email, role FROM users WHERE id = ?",
+      `SELECT id, name, email, role, empCode, phone, profile_image, team_id
+       FROM users
+       WHERE id = ?
+       LIMIT 1`,
       [userId],
       (err, rows) => {
         if (err) {
@@ -1560,22 +1563,21 @@ app.put("/update-profile", verifyToken, upload.single("image"), async (req, res)
     console.log("FILE:", req.file);
 
     const { name, email, empCode, phone } = req.body;
-
     const imageName = req.file ? req.file.filename : null;
 
     if (req.file) {
       await persistUploadedFile(req.file);
     }
 
-    let sql = imageName
-      ? `UPDATE users 
-         SET name=?, email=?, empCode=?, phone=?, profile_image=? 
-         WHERE id=?`
-      : `UPDATE users 
-         SET name=?, email=?, empCode=?, phone=? 
-         WHERE id=?`;
+    const sql = imageName
+      ? `UPDATE users
+         SET name = ?, email = ?, empCode = ?, phone = ?, profile_image = ?
+         WHERE id = ?`
+      : `UPDATE users
+         SET name = ?, email = ?, empCode = ?, phone = ?
+         WHERE id = ?`;
 
-    let values = imageName
+    const values = imageName
       ? [name, email, empCode, phone, imageName, userId]
       : [name, email, empCode, phone, userId];
 
@@ -1584,25 +1586,36 @@ app.put("/update-profile", verifyToken, upload.single("image"), async (req, res)
         console.log("UPDATE ERROR:", err);
         return res.status(500).json({
           message: "DB Error ❌",
-          error: err.message
+          error: err.message,
         });
       }
 
       console.log("UPDATED:", result);
 
       db.query(
-        "SELECT * FROM users WHERE id=? LIMIT 1",
+        `SELECT id, name, email, role, empCode, phone, profile_image, team_id
+         FROM users
+         WHERE id = ?
+         LIMIT 1`,
         [userId],
         (e2, rows) => {
-          if (e2 || !rows.length) {
-            return res.status(200).json({
-              message: "Updated ✅"
+          if (e2) {
+            console.log("PROFILE REFRESH ERROR:", e2);
+            return res.status(500).json({
+              message: "Updated but fetch failed ❌",
+              error: e2.message,
+            });
+          }
+
+          if (!rows || rows.length === 0) {
+            return res.status(404).json({
+              message: "User not found after update ❌",
             });
           }
 
           return res.status(200).json({
             message: "Profile Updated Successfully ✅",
-            user: rows[0]
+            user: rows[0],
           });
         }
       );
@@ -1610,7 +1623,8 @@ app.put("/update-profile", verifyToken, upload.single("image"), async (req, res)
   } catch (e) {
     console.log("PROFILE UPDATE CRASH:", e);
     return res.status(500).json({
-      message: "Server crash ❌"
+      message: "Server crash ❌",
+      error: e.message,
     });
   }
 });
