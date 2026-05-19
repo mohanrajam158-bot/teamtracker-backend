@@ -185,11 +185,15 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   console.log("🔥 User connected:", socket.id);
 
-  socket.on("joinRoom", () => {
-    const team_id = socket.user.team_id;
-    socket.join(`team_${team_id}`);
-    console.log("✅ Joined secure room:", team_id);
-  });
+  socket.on("joinRoom", (teamId) => {
+
+  const finalTeamId = teamId || socket.user.team_id;
+
+  socket.join(`team_${finalTeamId}`);
+
+  console.log(`✅ Joined secure room: team_${finalTeamId}`);
+  console.log(socket.rooms);
+});
 
   socket.on("joinUser", (user_id) => {
     socket.join(user_id.toString());
@@ -1465,29 +1469,67 @@ app.get("/profile", verifyToken, (req, res) => {
 });
 
 app.put("/update-profile", verifyToken, upload.single("image"), async (req, res) => {
-  const userId = req.user.id;
-  const { name, email, empCode, phone } = req.body;
-  const imageName = req.file ? req.file.filename : null;
+  try {
+    const userId = req.user.id;
 
-  await persistUploadedFile(req.file);
+    console.log("BODY:", req.body);
+    console.log("FILE:", req.file);
 
-  let sql = imageName
-    ? "UPDATE users SET name=?, email=?, empCode=?, phone=?, profile_image=? WHERE id=?"
-    : "UPDATE users SET name=?, email=?, empCode=?, phone=? WHERE id=?";
+    const { name, email, empCode, phone } = req.body;
 
-  let values = imageName
-    ? [name, email, empCode, phone, imageName, userId]
-    : [name, email, empCode, phone, userId];
+    const imageName = req.file ? req.file.filename : null;
 
-  db.query(sql, values, (err) => {
-    if (err) return res.status(500).json({ message: "DB Error ❌" });
-    res.status(200).json({
-      message: "Profile Updated Successfully ✅",
-      image: imageName
+    if (req.file) {
+      await persistUploadedFile(req.file);
+    }
+
+    let sql = imageName
+      ? `UPDATE users 
+         SET name=?, email=?, empCode=?, phone=?, profile_image=? 
+         WHERE id=?`
+      : `UPDATE users 
+         SET name=?, email=?, empCode=?, phone=? 
+         WHERE id=?`;
+
+    let values = imageName
+      ? [name, email, empCode, phone, imageName, userId]
+      : [name, email, empCode, phone, userId];
+
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        console.log("UPDATE ERROR:", err);
+        return res.status(500).json({
+          message: "DB Error ❌",
+          error: err.message
+        });
+      }
+
+      console.log("UPDATED:", result);
+
+      db.query(
+        "SELECT * FROM users WHERE id=? LIMIT 1",
+        [userId],
+        (e2, rows) => {
+          if (e2 || !rows.length) {
+            return res.status(200).json({
+              message: "Updated ✅"
+            });
+          }
+
+          return res.status(200).json({
+            message: "Profile Updated Successfully ✅",
+            user: rows[0]
+          });
+        }
+      );
     });
-  });
+  } catch (e) {
+    console.log("PROFILE UPDATE CRASH:", e);
+    return res.status(500).json({
+      message: "Server crash ❌"
+    });
+  }
 });
-
 app.post("/update-theme", verifyToken, (req, res) => {
   const userId = req.user.id;
   const { theme } = req.body;
