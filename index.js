@@ -398,12 +398,20 @@ const fileFilter = (req, file, cb) => {
     "image/jpg",
     "image/png",
     "image/webp",
+
+    "video/mp4",
+    "video/mpeg",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/webm",
+
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "text/plain",
+
     "audio/aac",
     "audio/mpeg",
     "audio/mp3",
@@ -413,6 +421,7 @@ const fileFilter = (req, file, cb) => {
     "audio/x-wav",
     "audio/ogg",
     "audio/webm",
+
     "application/octet-stream",
   ];
 
@@ -421,29 +430,38 @@ const fileFilter = (req, file, cb) => {
     ".jpeg",
     ".png",
     ".webp",
+
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".webm",
+
     ".pdf",
     ".doc",
     ".docx",
     ".xls",
     ".xlsx",
     ".txt",
+
     ".m4a",
     ".aac",
     ".mp3",
     ".wav",
     ".ogg",
-    ".webm",
   ];
 
   const isAllowed =
     allowedMimeTypes.includes(mime) ||
     allowedExtensions.includes(ext) ||
-    mime.startsWith("audio/");
+    mime.startsWith("audio/") ||
+    mime.startsWith("video/") ||
+    mime.startsWith("image/");
 
   if (isAllowed) {
     cb(null, true);
   } else {
-    cb(new Error(`Unsupported file type: ${ext}`), false);
+    cb(new Error(`Unsupported file type: ${ext || mime}`), false);
   }
 };
 
@@ -1269,60 +1287,81 @@ app.post("/work", verifyToken, upload.single("media"), (req, res) => {
     return res.status(400).json({ message: "Description is required ❌" });
   }
 
+  if (!teamId) {
+    return res.status(400).json({ message: "Team ID missing ❌" });
+  }
+
   const sql = `
-    INSERT INTO work_updates (user_id, description, media, status, team_id, created_at)
+    INSERT INTO work_updates
+    (user_id, description, media, status, team_id, created_at)
     VALUES (?, ?, ?, ?, ?, NOW())
   `;
 
-  db.query(sql, [userId, description.trim(), mediaFile, "pending", teamId], async (err, result) => {
-    if (err) {
-      console.error("❌ Work Insert Error:", err.message);
-      return res.status(500).json({ message: "DB Error ❌" });
-    }
+  db.query(
+    sql,
+    [userId, description.trim(), mediaFile, "pending", teamId],
+    async (err, result) => {
+      if (err) {
+        console.error("❌ Work Insert Error:", err.message);
+        return res.status(500).json({
+          message: "DB Error ❌",
+          error: err.message,
+        });
+      }
 
-    await persistUploadedFile(req.file);
+      await persistUploadedFile(req.file);
 
-    db.query(
-      "SELECT name FROM users WHERE id = ? LIMIT 1",
-      [userId],
-      async (userErr, users) => {
+      res.status(200).json({
+        message: "Work update added ✅",
+        id: result.insertId,
+        media: mediaFile,
+        status: "pending",
+      });
+
+      db.query("SELECT name FROM users WHERE id = ? LIMIT 1", [userId], (userErr, users) => {
         const employeeName =
           !userErr && users && users.length > 0 ? users[0].name : "Employee";
-
-        // ✅ Rule 1+3: TL in same team gets notification
-        // ✅ Rule 2+3: Colleagues (other employees) in same team also get notification
-        // ✅ Rule 4: sender (userId) excluded from both queries
-        res.status(200).json({ message: "Work update added ✅", id: result.insertId, status: "pending" });
 
         getTeamTLIds(teamId, userId, (e1, tlIds) => {
           if (!e1 && tlIds.length > 0) {
             getFcmTokens(tlIds, userId, async (e2, tlTokens) => {
               if (!e2 && tlTokens.length > 0) {
-                await sendPushNotification(tlTokens, "TEAM WORK TRACKER", `${employeeName} submitted a work update`, {
-                  type: "work_update", sender_name: employeeName, message: description.trim(),
-                });
-                console.log("✅ Work update notification sent to TL(s)");
+                await sendPushNotification(
+                  tlTokens,
+                  "TEAM WORK TRACKER",
+                  `${employeeName} submitted a work update`,
+                  {
+                    type: "work_update",
+                    sender_name: employeeName,
+                    message: description.trim(),
+                  }
+                );
               }
             });
           }
         });
 
-        // ✅ Rule 2: Also notify colleagues (other employees in same team)
         getTeamEmployeeIds(teamId, userId, (e3, colleagueIds) => {
           if (!e3 && colleagueIds.length > 0) {
             getFcmTokens(colleagueIds, userId, async (e4, colTokens) => {
               if (!e4 && colTokens.length > 0) {
-                await sendPushNotification(colTokens, "TEAM WORK TRACKER", `${employeeName} posted a work update`, {
-                  type: "colleague_update", sender_name: employeeName, message: description.trim(),
-                });
-                console.log("✅ Work update notification sent to colleagues");
+                await sendPushNotification(
+                  colTokens,
+                  "TEAM WORK TRACKER",
+                  `${employeeName} posted a work update`,
+                  {
+                    type: "colleague_update",
+                    sender_name: employeeName,
+                    message: description.trim(),
+                  }
+                );
               }
             });
           }
         });
-      }
-    );
-  });
+      });
+    }
+  );
 });
 
 app.patch("/work/watch/:id", verifyToken, (req, res) => {
@@ -1531,11 +1570,11 @@ app.get("/profile", verifyToken, (req, res) => {
     const userId = req.user.id;
 
     db.query(
-      `SELECT id, name, email, role, empCode, phone, profile_image, team_id
-       FROM users
-       WHERE id = ?
-       LIMIT 1`,
-      [userId],
+  `SELECT id, name, email, role, empCode, phone, profile_image, team_id, theme_preference
+   FROM users
+   WHERE id = ?
+   LIMIT 1`,
+  [userId],
       (err, rows) => {
         if (err) {
           console.log("Profile error:", err);
