@@ -776,11 +776,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
             // Rule 1: TL → employees in same team
             getTeamEmployeeIds(team_id, userId, (e1, empIds) => {
               if (e1 || !empIds.length) {
-                return res.status(200).json({ message: "Sent successfully ✅", messageId: result.insertId, media_url: mediaFile, data: newMessageData });
+                return res.status(200).json({ message: "Sent successfully ✅", messageId: messageId, media_url: mediaFile, data: newMessageData });
               }
               getFcmTokens(empIds, userId, async (e2, tokens) => {
                 if (!e2 && tokens.length > 0) await sendPushNotification(tokens, "TEAM WORK TRACKER", notifBody, notifData);
-                res.status(200).json({ message: "Sent successfully ✅", messageId: result.insertId, media_url: mediaFile, data: newMessageData });
+                res.status(200).json({ message: "Sent successfully ✅", messageId: messageId, media_url: mediaFile, data: newMessageData });
               });
             });
           } else {
@@ -796,7 +796,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
                 if (!e4 && colTokens.length > 0) await sendPushNotification(colTokens, "TEAM WORK TRACKER", notifBody, { ...notifData, type: "colleague_chat" });
               });
             });
-            res.status(200).json({ message: "Sent successfully ✅", messageId: result.insertId, media_url: mediaFile, data: newMessageData });
+            res.status(200).json({ message: "Sent successfully ✅", messageId: messageId, media_url: mediaFile, data: newMessageData });
           }
         }
       );
@@ -2357,42 +2357,37 @@ app.get("/tl-announcement-replies/:id", verifyToken, (req, res) => {
 
 app.get("/create-admin", async (req, res) => {
   try {
-    const plainPassword = process.env.ADMIN_PASSWORD || "123456";
+    const adminEmail = process.env.ADMIN_EMAIL || "admin@gmail.com";
+    const plainPassword = process.env.ADMIN_PASSWORD || "Admin@12345";
+
     const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
     const sql = `
-      UPDATE users
-      SET password = ?, role = 'admin', status = 'active'
-      WHERE email = ?
+      INSERT INTO users (name, email, password, role, status, team_id, created_at)
+      VALUES (?, ?, ?, 'admin', 'active', 1, NOW())
+      ON DUPLICATE KEY UPDATE
+        password = VALUES(password),
+        role = 'admin',
+        status = 'active',
+        team_id = 1
     `;
 
-    db.query(sql, [hashedPassword, "admin@gmail.com"], (err, result) => {
-      if (err) return res.status(500).send(err);
-
-      if (result.affectedRows > 0) {
-        return res.send("✅ Admin password updated with hashed password");
+    db.query(sql, ["Admin", adminEmail, hashedPassword], (err) => {
+      if (err) {
+        console.log("❌ Create admin error:", err);
+        return res.status(500).json({ error: err.message });
       }
 
-      const insertSql = `
-        INSERT INTO users (name, email, password, role, status)
-        VALUES (?, ?, ?, ?, ?)
-      `;
-
-      db.query(
-        insertSql,
-        ["Admin", "admin@gmail.com", hashedPassword, "admin", "active"],
-        (err2) => {
-          if (err2) return res.status(500).send(err2);
-          res.send("✅ Admin created with hashed password");
-        }
-      );
+      res.json({
+        message: "Admin ready ✅",
+        email: adminEmail
+      });
     });
   } catch (e) {
     console.log("❌ Create admin error:", e);
     res.status(500).json({ message: "Admin create failed ❌" });
   }
 });
-
 app.get("/pending-users", verifyToken, verifyAdmin, (req, res) => {
   db.query(
     `SELECT id, name, email, role, status, created_at, team_id
