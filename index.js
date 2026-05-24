@@ -2353,6 +2353,41 @@ app.post("/tl-announcement-reply", verifyToken, (req, res) => {
   });
 });
 
+
+app.get("/tl-replies/unread-count", verifyToken, (req, res) => {
+  const sql = `
+    SELECT COUNT(*) AS unread
+    FROM tl_announcement_replies r
+    JOIN tl_announcements a ON a.id = r.announcement_id
+    LEFT JOIN tl_reply_reads rr 
+      ON rr.reply_id = r.id AND rr.user_id = ?
+    WHERE a.team_id = ?
+      AND r.user_id != ?
+      AND rr.id IS NULL
+  `;
+
+  db.query(sql, [req.user.id, req.user.team_id, req.user.id], (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ unread: result?.[0]?.unread || 0 });
+  });
+});
+
+app.post("/tl-replies/mark-read", verifyToken, (req, res) => {
+  const sql = `
+    INSERT IGNORE INTO tl_reply_reads (reply_id, user_id)
+    SELECT r.id, ?
+    FROM tl_announcement_replies r
+    JOIN tl_announcements a ON a.id = r.announcement_id
+    WHERE a.team_id = ?
+      AND r.user_id != ?
+  `;
+
+  db.query(sql, [req.user.id, req.user.team_id, req.user.id], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ message: "TL replies marked read ✅" });
+  });
+});
+
 app.get("/tl-announcement-replies", verifyToken, (req, res) => {
   const sql = `
     SELECT r.*, a.title as announcement_title
