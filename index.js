@@ -2233,30 +2233,24 @@ app.post("/save-fcm-token", verifyToken, (req, res) => {
   }
 
   db.query(
-    "SELECT * FROM user_tokens WHERE user_id=? AND fcm_token=?",
+    "DELETE FROM user_tokens WHERE user_id = ? OR fcm_token = ?",
     [req.user.id, fcm_token],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-
-      if (rows.length > 0) {
-        console.log("⚠️ Token already exists");
-        return res.json({ message: "Token already saved" });
-      }
+    (delErr) => {
+      if (delErr) return res.status(500).json({ error: delErr.message });
 
       db.query(
         "INSERT INTO user_tokens (user_id, fcm_token) VALUES (?, ?)",
         [req.user.id, fcm_token],
-        (err2) => {
-          if (err2) return res.status(500).json({ error: err2.message });
+        (err) => {
+          if (err) return res.status(500).json({ error: err.message });
 
-          console.log("✅ Token saved for user:", req.user.id);
+          console.log("✅ Latest FCM token saved for user:", req.user.id);
           res.json({ message: "Token saved ✅" });
         }
       );
     }
   );
 });
-
 app.post("/notification-pref", verifyToken, (req, res) => {
   const { enabled } = req.body;
 
