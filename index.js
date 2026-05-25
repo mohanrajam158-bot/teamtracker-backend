@@ -2425,7 +2425,7 @@ app.get("/tl-announcement-replies/:id", verifyToken, (req, res) => {
 
 app.get("/create-admin", async (req, res) => {
   try {
-    const adminEmail = process.env.ADMIN_EMAIL || "admin@gmail.com";
+    const adminEmail = process.env.ADMIN_EMAIL || "admin@gmail.com"; 
     const plainPassword = process.env.ADMIN_PASSWORD || "Admin@12345";
 
     const hashedPassword = await bcrypt.hash(plainPassword, 10);
