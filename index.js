@@ -2114,34 +2114,38 @@
     });
   });
 
-  app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
-    const sql = `
-      SELECT COUNT(*) as unread 
-      FROM tl_announcements a
-      WHERE a.team_id = ?
-      AND a.created_at >= (
-        SELECT created_at FROM users WHERE id = ?
-      )
-      AND a.id NOT IN (
-        SELECT announcement_id 
-        FROM tl_announcement_reads 
-        WHERE user_id = ?
-      )
-    `;
+ app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
 
-    db.query(
-      sql,
-      [req.user.team_id, req.user.id, req.user.id],
-      (err, result) => {
-        if (err) {
-          return res.status(500).json({ error: err.message });
-        }
+  const sql = `
+    SELECT COUNT(*) AS unread
+    FROM tl_announcements a
+    WHERE a.team_id = ?
+    AND a.id NOT IN (
+      SELECT announcement_id
+      FROM tl_announcement_reads
+      WHERE user_id = ?
+    )
+  `;
 
-        const unread = result?.[0]?.unread || 0;
-        return res.json({ unread });
+  db.query(
+    sql,
+    [req.user.team_id, req.user.id],
+    (err, result) => {
+
+      if (err) {
+        return res.status(500).json({
+          error: err.message
+        });
       }
-    );
-  });
+
+      return res.json({
+        unread: result[0].unread || 0
+      });
+
+    }
+  );
+
+});
 
   app.post("/tl-updates/mark-read", verifyToken, (req, res) => {
     const getSql = `
@@ -2716,7 +2720,7 @@
     );
   });
 
-  app.delete("/delete-message-for-me", verifyToken, (req, res) => {
+ app.delete("/delete-message-for-me", verifyToken, (req, res) => {
   const { message_id } = req.body;
   const userId = req.user.id;
 
@@ -2725,31 +2729,18 @@
   }
 
   db.query(
-    "SELECT id FROM team_messages WHERE id = ? LIMIT 1",
-    [message_id],
-    (findErr, rows) => {
-      if (findErr) {
-        return res.status(500).json({ error: findErr.message });
+    "INSERT IGNORE INTO deleted_chat_messages (message_id, user_id) VALUES (?, ?)",
+    [message_id, userId],
+    (insertErr) => {
+      if (insertErr) {
+        return res.status(500).json({ error: insertErr.message });
       }
 
-      if (!rows.length) {
-        return res.status(404).json({ error: "Message not found" });
-      }
+      console.log(`✅ Message ${message_id} hidden for user ${userId}`);
 
-      db.query(
-        "INSERT IGNORE INTO deleted_chat_messages (message_id, user_id) VALUES (?, ?)",
-        [message_id, userId],
-        (insertErr) => {
-          if (insertErr) {
-            return res.status(500).json({ error: insertErr.message });
-          }
-
-          console.log(`✅ Message ${message_id} hidden for user ${userId}`);
-          return res.status(200).json({
-            message: "Message hidden for this user ✅"
-          });
-        }
-      );
+      return res.status(200).json({
+        message: "Message hidden for this user ✅"
+      });
     }
   );
 });
