@@ -2115,21 +2115,38 @@
   });
 
 app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
+
   const sql = `
-    SELECT COUNT(a.id) AS unread
+    SELECT COUNT(*) AS unread
     FROM tl_announcements a
-    LEFT JOIN tl_announcement_reads r
-      ON r.announcement_id = a.id
-      AND r.user_id = ?
     WHERE a.team_id = ?
-      AND r.announcement_id IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM tl_announcement_reads r
+      WHERE r.announcement_id = a.id
+      AND r.user_id = ?
+    )
   `;
 
-  db.query(sql, [req.user.id, req.user.team_id], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
+  db.query(
+    sql,
+    [req.user.team_id, req.user.id],
+    (err, result) => {
 
-    res.json({ unread: result[0].unread || 0 });
-  });
+      if (err) {
+        console.log("UNREAD ERROR:", err);
+        return res.status(500).json({
+          error: err.message
+        });
+      }
+
+      return res.json({
+        unread: result?.[0]?.unread || 0
+      });
+
+    }
+  );
+
 });
 
   app.post("/tl-updates/mark-read", verifyToken, (req, res) => {
