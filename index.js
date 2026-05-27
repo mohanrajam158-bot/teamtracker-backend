@@ -2114,37 +2114,22 @@
     });
   });
 
- app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
-
+app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
   const sql = `
-    SELECT COUNT(*) AS unread
+    SELECT COUNT(a.id) AS unread
     FROM tl_announcements a
+    LEFT JOIN tl_announcement_reads r
+      ON r.announcement_id = a.id
+      AND r.user_id = ?
     WHERE a.team_id = ?
-    AND a.id NOT IN (
-      SELECT announcement_id
-      FROM tl_announcement_reads
-      WHERE user_id = ?
-    )
+      AND r.announcement_id IS NULL
   `;
 
-  db.query(
-    sql,
-    [req.user.team_id, req.user.id],
-    (err, result) => {
+  db.query(sql, [req.user.id, req.user.team_id], (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
 
-      if (err) {
-        return res.status(500).json({
-          error: err.message
-        });
-      }
-
-      return res.json({
-        unread: result[0].unread || 0
-      });
-
-    }
-  );
-
+    res.json({ unread: result[0].unread || 0 });
+  });
 });
 
   app.post("/tl-updates/mark-read", verifyToken, (req, res) => {
