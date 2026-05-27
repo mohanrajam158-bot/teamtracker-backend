@@ -2150,30 +2150,28 @@ app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
 });
 
   app.post("/tl-updates/mark-read", verifyToken, (req, res) => {
-    const getSql = `
-      SELECT id FROM tl_announcements
-      WHERE team_id = ?
-      AND id NOT IN (
-        SELECT announcement_id FROM tl_announcement_reads WHERE user_id = ?
-      )
-    `;
+  const userId = req.user.id;
+  const teamId = req.user.team_id;
 
-    db.query(getSql, [req.user.team_id, req.user.id], (err, items) => {
-      if (err || items.length === 0) return res.json({ message: "Nothing to mark" });
+  const sql = `
+    INSERT IGNORE INTO tl_announcement_reads (announcement_id, user_id)
+    SELECT id, ?
+    FROM tl_announcements
+    WHERE team_id = ?
+  `;
 
-      const values = items.map(a => [a.id, req.user.id]);
+  db.query(sql, [userId, teamId], (err, result) => {
+    if (err) {
+      console.log("MARK READ ERROR:", err);
+      return res.status(500).json({ error: err.message });
+    }
 
-      db.query(
-        "INSERT IGNORE INTO tl_announcement_reads (announcement_id, user_id) VALUES ?",
-        [values],
-        (err2) => {
-          if (err2) return res.status(500).json({ error: err2.message });
-          res.json({ message: "Marked as read ✅" });
-        }
-      );
+    res.json({
+      message: "All marked read ✅",
+      inserted: result.affectedRows,
     });
   });
-
+});
   app.post("/tl-updates/mark-one-read", verifyToken, (req, res) => {
   const { announcement_id } = req.body;
 
