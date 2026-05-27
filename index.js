@@ -2716,6 +2716,44 @@
     );
   });
 
+  app.delete("/delete-message-for-me", verifyToken, (req, res) => {
+  const { message_id } = req.body;
+  const userId = req.user.id;
+
+  if (!message_id) {
+    return res.status(400).json({ error: "Message ID required" });
+  }
+
+  db.query(
+    "SELECT id FROM team_messages WHERE id = ? LIMIT 1",
+    [message_id],
+    (findErr, rows) => {
+      if (findErr) {
+        return res.status(500).json({ error: findErr.message });
+      }
+
+      if (!rows.length) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      db.query(
+        "INSERT IGNORE INTO deleted_chat_messages (message_id, user_id) VALUES (?, ?)",
+        [message_id, userId],
+        (insertErr) => {
+          if (insertErr) {
+            return res.status(500).json({ error: insertErr.message });
+          }
+
+          console.log(`✅ Message ${message_id} hidden for user ${userId}`);
+          return res.status(200).json({
+            message: "Message hidden for this user ✅"
+          });
+        }
+      );
+    }
+  );
+});
+
   ////////////////////////////////////////////////////////////
   /// DB INFO LOGGING
   ////////////////////////////////////////////////////////////
