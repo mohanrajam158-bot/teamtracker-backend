@@ -2026,86 +2026,63 @@ app.post("/tl-post", verifyToken, upload.single("media"), async (req, res) => {
     const mediaFile = req.file ? req.file.filename : null;
     const userId = req.user.id;
 
-    // 1. வேலிடேஷன் செக்
     if (!title || !message) {
       return res.status(400).json({ error: "Title and message are required ❌" });
     }
 
-    // 2. புது அனௌன்ஸ்மென்ட்டை Railway DB-யில் சேமிக்கிறோம்
     const insertTL = `
       INSERT INTO tl_announcements (title, message, team_id, media_url, created_at)
       VALUES (?, ?, ?, ?, NOW())
     `;
-    const result2 = await queryAsync(insertTL, [title, message, team_id, mediaFile]);
+    
+    // 👈 mysql2 ஓட சொந்த ப்ராமிஸ் மெத்தட்! இதுக்கு எந்த இம்போர்ட்டும் தேவையில்லை மச்சான்!
+    const [result2] = await db.promise().query(insertTL, [title, message, team_id, mediaFile]);
 
-    // 3. ஃபைல் அப்லோடை பெர்சிஸ்ட் செய்கிறோம்
     if (req.file) {
       await persistUploadedFile(req.file);
     }
 
-    console.log("✅ TL Announcement saved:", result2.insertId);
+    console.log("✅ TL Announcement saved:", result2.insertId || result2.id);
 
-    // 4. புஷ் நோட்டிபிகேஷன் வேலை (பேக்கிரவுண்டில் தனியாக நடக்கும் - API ரெஸ்பான்ஸை லேட் பண்ணாது)
+    // BACKGROUND PUSH NOTIFICATION LOGIC
     (async () => {
       try {
         const fetchTokensSql = `
-          SELECT ut.fcm_token
-          FROM user_tokens ut
+          SELECT ut.fcm_token FROM user_tokens ut
           JOIN users u ON u.id = ut.user_id
-          WHERE u.team_id = ?
-            AND u.notification_enabled = 1
-            AND u.role = 'employee'
-            AND u.id != ?
+          WHERE u.team_id = ? AND u.notification_enabled = 1 AND u.role = 'employee' AND u.id != ?
         `;
-        const rows = await queryAsync(fetchTokensSql, [team_id, userId]);
+        
+        // 👈 இங்கயும் அதே பக்கா ப்ராமிஸ் மெத்தட்
+        const [rows] = await db.promise().query(fetchTokensSql, [team_id, userId]);
         const tokens = rows.map((r) => r.fcm_token).filter(Boolean);
 
         if (tokens.length > 0) {
           await admin.messaging().sendEachForMulticast({
             tokens,
-            notification: {
-              title: "TEAM WORK TRACKER",
-              body: `${title}: ${message}`,
-            },
+            notification: { title: "TEAM WORK TRACKER", body: `${title}: ${message}` },
             android: {
               priority: "high",
-              notification: {
-                channelId: "tl_updates",
-                priority: "high",
-                sound: "default",
-                defaultSound: true,
-                defaultVibrateTimings: true,
-                visibility: "public",
-                icon: "ic_launcher",
-              },
+              notification: { channelId: "tl_updates", priority: "high", sound: "default", defaultSound: true, icon: "ic_launcher" }
             },
-            data: {
-              click_action: "FLUTTER_NOTIFICATION_CLICK",
-              type: "tl_post",
-              title: title || "",
-              message: message || "",
-            },
+            data: { click_action: "FLUTTER_NOTIFICATION_CLICK", type: "tl_post", title: title || "", message: message || "" },
           });
-          console.log(`✅ Push notification sent successfully to ${tokens.length} users`);
+          console.log(`✅ Push notification sent to ${tokens.length} users`);
         }
       } catch (pushErr) {
-        console.error("⚠️ Push notification background failure:", pushErr.message);
+        console.error("⚠️ Push background failure:", pushErr.message);
       }
     })();
 
-    // 5. TL-க்கு உடனே சக்சஸ் ரெஸ்பான்ஸ் போயிரும் (No waiting for Push logic to finish!)
     return res.json({
       message: "Post saved + Notification sent ✅",
-      postId: result2.insertId,
+      postId: result2.insertId || result2.id,
       media_url: mediaFile,
     });
 
   } catch (err) {
     console.error("❌ TL Announcement Route Error:", err);
-    return res.status(500).json({ 
-      error: "Internal Server Error ❌",
-      details: err.message 
-    });
+    return res.status(500).json({ error: "Internal Server Error ❌", details: err.message });
   }
 });
   app.get("/tl-updates", verifyToken, (req, res) => {
