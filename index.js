@@ -115,8 +115,7 @@
   ////////////////////////////////////////////////////////////
   const db = require("./db");
   // ✅ NEVER declare db again! This is the ONLY db instance.
-  const queryAsync = promisify(db.query).bind(db);
-  global.queryAsync = queryAsync;
+  global.queryAsync = (sql, params) => db.promise().query(sql, params).then(([rows]) => rows);
 
   ////////////////////////////////////////////////////////////
   /// SOCKET.IO SETUP
