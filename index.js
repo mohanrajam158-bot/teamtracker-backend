@@ -16,6 +16,11 @@
   const nodemailer = require('nodemailer');
   const admin = require("firebase-admin");
   const { v4: uuidv4 } = require("uuid");
+  
+const { promisify } = require("util");
+
+
+const queryAsync = promisify(db.query).bind(db);
 
   ////////////////////////////////////////////////////////////
   /// ✅ APP INITIALIZATION (MOVED TO TOP)
