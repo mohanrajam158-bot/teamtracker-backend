@@ -2015,88 +2015,96 @@
   ////////////////////////////////////////////////////////////
   /// ✅ TL ANNOUNCEMENT ROUTES
   ////////////////////////////////////////////////////////////
-
-  app.post("/tl-post", verifyToken, upload.single("media"), (req, res) => {
+app.post("/tl-post", verifyToken, upload.single("media"), async (req, res) => {
+  try {
     const title = req.body.title;
     const message = req.body.message;
     const team_id = req.user.team_id;
     const mediaFile = req.file ? req.file.filename : null;
     const userId = req.user.id;
 
+    // 1. வேலிடேஷன் செக்
+    if (!title || !message) {
+      return res.status(400).json({ error: "Title and message are required ❌" });
+    }
+
+    // 2. புது அனௌன்ஸ்மென்ட்டை Railway DB-யில் சேமிக்கிறோம்
     const insertTL = `
       INSERT INTO tl_announcements (title, message, team_id, media_url, created_at)
       VALUES (?, ?, ?, ?, NOW())
     `;
+    const result2 = await queryAsync(insertTL, [title, message, team_id, mediaFile]);
 
-    db.query(insertTL, [title, message, team_id, mediaFile], async (err3, result2) => {
-      if (err3) {
-        console.log("❌ TL Announcement Insert Error:", err3);
-        return res.status(500).json({ error: err3.message });
-      }
-
+    // 3. ஃபைல் அப்லோடை பெர்சிஸ்ட் செய்கிறோம்
+    if (req.file) {
       await persistUploadedFile(req.file);
+    }
 
-      console.log("✅ TL Announcement saved:", result2.insertId);
+    console.log("✅ TL Announcement saved:", result2.insertId);
 
-      db.query(
-        `SELECT ut.fcm_token
-        FROM user_tokens ut
-        JOIN users u ON u.id = ut.user_id
-        WHERE u.team_id = ?
-        AND u.notification_enabled = 1
-        AND u.role = 'employee'
-        AND u.id != ?`,
-        [team_id, userId],
-        async (err2, rows) => {
-          if (err2) {
-            console.log("❌ Token Fetch Error:", err2);
-            return res.status(500).json({ error: err2.message });
-          }
+    // 4. புஷ் நோட்டிபிகேஷன் வேலை (பேக்கிரவுண்டில் தனியாக நடக்கும் - API ரெஸ்பான்ஸை லேட் பண்ணாது)
+    (async () => {
+      try {
+        const fetchTokensSql = `
+          SELECT ut.fcm_token
+          FROM user_tokens ut
+          JOIN users u ON u.id = ut.user_id
+          WHERE u.team_id = ?
+            AND u.notification_enabled = 1
+            AND u.role = 'employee'
+            AND u.id != ?
+        `;
+        const rows = await queryAsync(fetchTokensSql, [team_id, userId]);
+        const tokens = rows.map((r) => r.fcm_token).filter(Boolean);
 
-          const tokens = rows.map((r) => r.fcm_token).filter(Boolean);
-
-          if (tokens.length > 0) {
-            try {
-              await admin.messaging().sendEachForMulticast({
-                tokens,
-                notification: {
-                  title: "TEAM WORK TRACKER",
-                  body: `${title}: ${message}`,
-                },
-                android: {
-                  priority: "high",
-                  notification: {
-                    channelId: "tl_updates",
-                    priority: "high",
-                    sound: "default",
-                    defaultSound: true,
-                    defaultVibrateTimings: true,
-                    visibility: "public",
-                    icon: "ic_launcher",
-                  },
-                },
-                data: {
-                  click_action: "FLUTTER_NOTIFICATION_CLICK",
-                  type: "tl_post",
-                  title: title || "",
-                  message: message || "",
-                },
-              });
-            } catch (pushErr) {
-              console.log("⚠️ Push notification error:", pushErr.message);
-            }
-          }
-
-          res.json({
-            message: "Post saved + Notification sent ✅",
-            postId: result2.insertId,
-            media_url: mediaFile,
+        if (tokens.length > 0) {
+          await admin.messaging().sendEachForMulticast({
+            tokens,
+            notification: {
+              title: "TEAM WORK TRACKER",
+              body: `${title}: ${message}`,
+            },
+            android: {
+              priority: "high",
+              notification: {
+                channelId: "tl_updates",
+                priority: "high",
+                sound: "default",
+                defaultSound: true,
+                defaultVibrateTimings: true,
+                visibility: "public",
+                icon: "ic_launcher",
+              },
+            },
+            data: {
+              click_action: "FLUTTER_NOTIFICATION_CLICK",
+              type: "tl_post",
+              title: title || "",
+              message: message || "",
+            },
           });
+          console.log(`✅ Push notification sent successfully to ${tokens.length} users`);
         }
-      );
-    });
-  });
+      } catch (pushErr) {
+        console.error("⚠️ Push notification background failure:", pushErr.message);
+      }
+    })();
 
+    // 5. TL-க்கு உடனே சக்சஸ் ரெஸ்பான்ஸ் போயிரும் (No waiting for Push logic to finish!)
+    return res.json({
+      message: "Post saved + Notification sent ✅",
+      postId: result2.insertId,
+      media_url: mediaFile,
+    });
+
+  } catch (err) {
+    console.error("❌ TL Announcement Route Error:", err);
+    return res.status(500).json({ 
+      error: "Internal Server Error ❌",
+      details: err.message 
+    });
+  }
+});
   app.get("/tl-updates", verifyToken, (req, res) => {
     const sql = `
       SELECT * FROM tl_announcements
@@ -2114,63 +2122,70 @@
     });
   });
 
-app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
+app.get("/tl-updates/unread-count", verifyToken, async (req, res) => {
+  try {
+    // 1. யூசர் இன்னும் 'Read' பண்ணாத போஸ்ட்களை மட்டும் துல்லியமாக கவுண்ட் பண்ணும் Query
+    const sql = `
+      SELECT COUNT(*) AS unread
+      FROM tl_announcements a
+      WHERE a.team_id = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM tl_announcement_reads r
+          WHERE r.announcement_id = a.id
+            AND r.user_id = ?
+        )
+    `;
 
-  const sql = `
-    SELECT COUNT(*) AS unread
-    FROM tl_announcements a
-    WHERE a.team_id = ?
-    AND NOT EXISTS (
-      SELECT 1
-      FROM tl_announcement_reads r
-      WHERE r.announcement_id = a.id
-      AND r.user_id = ?
-    )
-  `;
+    // 2. Async/Await மூலம் Railway DB-யில் இருந்து தரவை எடுக்கிறோம்
+    const result = await queryAsync(sql, [req.user.team_id, req.user.id]);
 
-  db.query(
-    sql,
-    [req.user.team_id, req.user.id],
-    (err, result) => {
+    // 3. வெற்றிகரமாக கவுண்டை ஃபிரண்ட்-எண்டிற்கு அனுப்புகிறோம்
+    return res.json({
+      unread: result?.[0]?.unread || 0
+    });
 
-      if (err) {
-        console.log("UNREAD ERROR:", err);
-        return res.status(500).json({
-          error: err.message
-        });
-      }
-
-      return res.json({
-        unread: result?.[0]?.unread || 0
-      });
-
-    }
-  );
-
+  } catch (err) {
+    // 4. ஏதேனும் பிழை ஏற்பட்டால் சர்வர் க்ராஷ் ஆகாமல் தடுத்து எர்ரர் லாக் செய்யும்
+    console.error("❌ UNREAD COUNT FETCH ERROR:", err);
+    return res.status(500).json({ 
+      error: "Internal Server Error ❌",
+      details: err.message 
+    });
+  }
 });
+ app.post("/tl-updates/mark-read", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const teamId = req.user.team_id;
 
-  app.post("/tl-updates/mark-read", verifyToken, (req, res) => {
-  const userId = req.user.id;
-  const teamId = req.user.team_id;
+    // 1. அந்த டீமில் உள்ள அனைத்து அனௌன்ஸ்மென்ட்களையும் இந்த யூசர் படித்துவிட்டார் என லாக் செய்யும் Query
+    const sql = `
+      INSERT IGNORE INTO tl_announcement_reads (announcement_id, user_id)
+      SELECT id, ?
+      FROM tl_announcements
+      WHERE team_id = ?
+    `;
 
-  const sql = `
-    INSERT IGNORE INTO tl_announcement_reads (announcement_id, user_id)
-    SELECT id, ?
-    FROM tl_announcements
-    WHERE team_id = ?
-  `;
+    // 2. Async/Await மூலம் வினவலை (Query) இயக்குகிறோம்
+    const result = await queryAsync(sql, [userId, teamId]);
 
-  db.query(sql, [userId, teamId], (err, result) => {
-    if (err) {
-      console.log("MARK READ ERROR:", err);
-      return res.status(500).json({ error: err.message });
-    }
+    console.log(`🧹 Notification count cleared (0) for user ${userId}`);
 
-    res.json({
+    // 3. வெற்றிகரமாக கவுண்ட் ரீசெட் ஆனதை உறுதிப்படுத்துகிறோம்
+    return res.json({
       message: "All marked read ✅",
       inserted: result.affectedRows,
     });
-  });
+
+  } catch (err) {
+    // 4. ஏதேனும் எர்ரர் வந்தால் சர்வர் க்ராஷ் ஆகாமல் தடுத்து லாக் செய்யும்
+    console.error("❌ MARK READ ERROR:", err);
+    return res.status(500).json({ 
+      error: "Internal Server Error ❌",
+      details: err.message 
+    });
+  }
 });
   app.post("/tl-updates/mark-one-read", verifyToken, (req, res) => {
   const { announcement_id } = req.body;
