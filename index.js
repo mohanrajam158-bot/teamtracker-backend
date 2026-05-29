@@ -2760,6 +2760,73 @@ app.get("/tl-updates/unread-count", verifyToken, async (req, res) => {
     }
   );
 
+  // ==========================================================================
+// 🏢 TEAM LEAD (TL) API ROUTES - EMPLOYEE MONITORING (LAST 30 DAYS)
+// ==========================================================================
+
+// 1. Staff Members Directory List with Last 30 Days Count
+app.get('/api/tl/employees-summary', async (req, res) => {
+  try {
+    // MySQL-ல ?க்கு பதிலா ஸ்ட்ரெயிட்டா INTERVAL 30 DAY போடுறோம்
+    const queryText = `
+      SELECT 
+        s.staff_id AS id, 
+        s.full_name AS name, 
+        s.designation AS role, 
+        s.official_email AS email, 
+        s.is_active_now AS is_online,
+        COUNT(l.log_id) AS last_30_days_updates
+      FROM staff_members s
+      LEFT JOIN daily_progress_logs l ON s.staff_id = l.staff_id 
+        AND l.created_at >= NOW() - INTERVAL 30 DAY
+      GROUP BY s.staff_id
+      ORDER BY last_30_days_updates DESC;
+    `;
+
+    // pool.query() அல்லது db.query() உங்களோட கனெக்ஷன் வேரியபிள் எதுவோ அதை யூஸ் பண்ணுங்க
+    pool.query(queryText, (err, results) => {
+      if (err) {
+        console.error("Database Error:", err);
+        return res.status(500).json({ error: "Database error occurred" });
+      }
+      res.json(results);
+    });
+
+  } catch (err) {
+    console.error("Server Error:", err.message);
+    res.status(500).send("Server Error");
+  }
+});
+
+// 2. Specific Employee oda Detailed 30 Days Log Updates API
+app.get('/api/tl/employee-updates/:empId', async (req, res) => {
+  const { empId } = req.params;
+  try {
+    const queryText = `
+      SELECT 
+        log_id AS id, 
+        update_title AS title, 
+        work_summary AS description, 
+        created_at 
+      FROM daily_progress_logs 
+      WHERE staff_id = ? AND created_at >= NOW() - INTERVAL 30 DAY
+      ORDER BY created_at DESC;
+    `;
+
+    pool.query(queryText, [empId], (err, results) => {
+      if (err) {
+        console.error("Database Error:", err);
+        return res.status(500).json({ error: "Database error occurred" });
+      }
+      res.json(results);
+    });
+
+  } catch (err) {
+    console.error("Server Error:", err.message);
+    res.status(500).send("Server Error");
+  }
+});
+
   ////////////////////////////////////////////////////////////
   /// ✅ SERVER START
   ////////////////////////////////////////////////////////////
