@@ -2760,73 +2760,53 @@ app.get("/tl-updates/unread-count", verifyToken, async (req, res) => {
     }
   );
 
-  // ==========================================================================
-// 🏢 TEAM LEAD (TL) API ROUTES - EMPLOYEE MONITORING (LAST 30 DAYS)
-// ==========================================================================
+  // TL Employee List with Last 30 Days Work Count
+app.get("/api/tl/employees-summary", verifyToken, (req, res) => {
+  const sql = `
+    SELECT 
+      u.id,
+      u.name,
+      u.email,
+      u.role,
+      u.status,
+      u.profile_image,
+      COUNT(w.id) AS last_30_days_updates
+    FROM users u
+    LEFT JOIN work_updates w
+      ON w.user_id = u.id
+      AND w.created_at >= NOW() - INTERVAL 30 DAY
+    WHERE u.team_id = ?
+      AND u.role = 'employee'
+      AND u.status = 'active'
+    GROUP BY u.id, u.name, u.email, u.role, u.status, u.profile_image
+    ORDER BY last_30_days_updates DESC
+  `;
 
-// 1. Staff Members Directory List with Last 30 Days Count
-app.get('/api/tl/employees-summary', async (req, res) => {
-  try {
-    // MySQL-ல ?க்கு பதிலா ஸ்ட்ரெயிட்டா INTERVAL 30 DAY போடுறோம்
-    const queryText = `
-      SELECT 
-        s.staff_id AS id, 
-        s.full_name AS name, 
-        s.designation AS role, 
-        s.official_email AS email, 
-        s.is_active_now AS is_online,
-        COUNT(l.log_id) AS last_30_days_updates
-      FROM staff_members s
-      LEFT JOIN daily_progress_logs l ON s.staff_id = l.staff_id 
-        AND l.created_at >= NOW() - INTERVAL 30 DAY
-      GROUP BY s.staff_id
-      ORDER BY last_30_days_updates DESC;
-    `;
-
-    // pool.query() அல்லது db.query() உங்களோட கனெக்ஷன் வேரியபிள் எதுவோ அதை யூஸ் பண்ணுங்க
-    pool.query(queryText, (err, results) => {
-      if (err) {
-        console.error("Database Error:", err);
-        return res.status(500).json({ error: "Database error occurred" });
-      }
-      res.json(results);
-    });
-
-  } catch (err) {
-    console.error("Server Error:", err.message);
-    res.status(500).send("Server Error");
-  }
+  db.query(sql, [req.user.team_id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
 });
+app.get("/api/tl/employee-updates/:empId", verifyToken, (req, res) => {
+  const sql = `
+    SELECT 
+      id,
+      description,
+      status,
+      media,
+      created_at
+    FROM work_updates
+    WHERE user_id = ?
+      AND team_id = ?
+      AND created_at >= NOW() - INTERVAL 30 DAY
+    ORDER BY created_at DESC
+  `;
 
-// 2. Specific Employee oda Detailed 30 Days Log Updates API
-app.get('/api/tl/employee-updates/:empId', async (req, res) => {
-  const { empId } = req.params;
-  try {
-    const queryText = `
-      SELECT 
-        log_id AS id, 
-        update_title AS title, 
-        work_summary AS description, 
-        created_at 
-      FROM daily_progress_logs 
-      WHERE staff_id = ? AND created_at >= NOW() - INTERVAL 30 DAY
-      ORDER BY created_at DESC;
-    `;
-
-    pool.query(queryText, [empId], (err, results) => {
-      if (err) {
-        console.error("Database Error:", err);
-        return res.status(500).json({ error: "Database error occurred" });
-      }
-      res.json(results);
-    });
-
-  } catch (err) {
-    console.error("Server Error:", err.message);
-    res.status(500).send("Server Error");
-  }
+  db.query(sql, [req.params.empId, req.user.team_id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
 });
-
   ////////////////////////////////////////////////////////////
   /// ✅ SERVER START
   ////////////////////////////////////////////////////////////
