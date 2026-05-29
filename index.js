@@ -17,10 +17,6 @@
   const admin = require("firebase-admin");
   const { v4: uuidv4 } = require("uuid");
   
-const { promisify } = require("util");
-
-
-const queryAsync = promisify(db.query).bind(db);
 
   ////////////////////////////////////////////////////////////
   /// ✅ APP INITIALIZATION (MOVED TO TOP)
@@ -119,6 +115,8 @@ const queryAsync = promisify(db.query).bind(db);
   ////////////////////////////////////////////////////////////
   const db = require("./db");
   // ✅ NEVER declare db again! This is the ONLY db instance.
+  const queryAsync = promisify(db.query).bind(db);
+  global.queryAsync = queryAsync;
 
   ////////////////////////////////////////////////////////////
   /// SOCKET.IO SETUP
