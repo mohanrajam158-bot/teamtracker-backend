@@ -823,14 +823,16 @@
   });
 
   app.get('/get-messages', verifyToken, (req, res) => {
-    const teamId = req.user.team_id;
-    const userId = req.user.id;
+  const teamId = req.user.team_id;
+  const userId = req.user.id;
 
-    if (!teamId) {
-      return res.status(400).json({ error: "Team ID missing!" });
-    }
+  if (!teamId) {
+    return res.status(400).json({ error: "Team ID missing!" });
+  }
 
-    const sql = `
+  const sql = `
+    SELECT *
+    FROM (
       SELECT m.*, u.profile_image, u.id AS sender_user_id
       FROM team_messages m
       LEFT JOIN users u ON u.id = m.sender_user_id
@@ -841,18 +843,21 @@
           SELECT created_at FROM users WHERE id = ?
         )
         AND d.id IS NULL
-      ORDER BY m.created_at ASC
-    `;
+      ORDER BY m.created_at DESC
+      LIMIT 50
+    ) latest
+    ORDER BY latest.created_at ASC
+  `;
 
-    db.query(sql, [userId, teamId, userId], (err, results) => {
-      if (err) {
-        console.error("❌ Get messages error:", err);
-        return res.status(500).json({ error: err.message });
-      }
+  db.query(sql, [userId, teamId, userId], (err, results) => {
+    if (err) {
+      console.error("❌ Get messages error:", err);
+      return res.status(500).json({ error: err.message });
+    }
 
-      res.json(results);
-    });
+    res.json(results);
   });
+});
 
   app.delete('/clear-chat', verifyToken, (req, res) => {
     const team_id = req.user.team_id;
@@ -1254,6 +1259,7 @@
         JOIN users u ON wu.user_id = u.id
         WHERE wu.team_id = ?
         ORDER BY wu.created_at DESC
+        LIMIT 50
       `;
       params = [teamId];
     } else {
@@ -1263,6 +1269,7 @@
         JOIN users u ON wu.user_id = u.id
         WHERE wu.user_id = ?
         ORDER BY wu.created_at DESC
+         LIMIT 50
       `;
       params = [userId];
     }
@@ -2115,52 +2122,42 @@
   });
 
 app.get("/tl-updates/unread-count", verifyToken, (req, res) => {
-
   const sql = `
     SELECT COUNT(*) AS unread
     FROM tl_announcements a
     WHERE a.team_id = ?
-    AND NOT EXISTS (
-      SELECT 1
-      FROM tl_announcement_reads r
-      WHERE r.announcement_id = a.id
-      AND r.user_id = ?
-    )
+      AND a.created_at >= (
+        SELECT created_at FROM users WHERE id = ?
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM tl_announcement_reads r
+        WHERE r.announcement_id = a.id
+          AND r.user_id = ?
+      )
   `;
 
-  db.query(
-    sql,
-    [req.user.team_id, req.user.id],
-    (err, result) => {
-
-      if (err) {
-        console.log("UNREAD ERROR:", err);
-        return res.status(500).json({
-          error: err.message
-        });
-      }
-
-      return res.json({
-        unread: result?.[0]?.unread || 0
-      });
-
+  db.query(sql, [req.user.team_id, req.user.id, req.user.id], (err, result) => {
+    if (err) {
+      console.log("UNREAD ERROR:", err);
+      return res.status(500).json({ error: err.message });
     }
-  );
 
+    return res.json({ unread: result?.[0]?.unread || 0 });
+  });
 });
-
   app.post("/tl-updates/mark-read", verifyToken, (req, res) => {
-  const userId = req.user.id;
-  const teamId = req.user.team_id;
-
   const sql = `
     INSERT IGNORE INTO tl_announcement_reads (announcement_id, user_id)
     SELECT id, ?
     FROM tl_announcements
     WHERE team_id = ?
+      AND created_at >= (
+        SELECT created_at FROM users WHERE id = ?
+      )
   `;
 
-  db.query(sql, [userId, teamId], (err, result) => {
+  db.query(sql, [req.user.id, req.user.team_id, req.user.id], (err, result) => {
     if (err) {
       console.log("MARK READ ERROR:", err);
       return res.status(500).json({ error: err.message });
