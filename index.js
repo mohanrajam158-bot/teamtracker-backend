@@ -2762,24 +2762,24 @@ app.get("/tl-updates/unread-count", verifyToken, async (req, res) => {
 
   // TL Employee List with Last 30 Days Work Count
 app.get("/api/tl/employees-summary", verifyToken, (req, res) => {
+    console.log("🔥 MONTHLY EMPLOYEE SUMMARY API HIT");
   const sql = `
     SELECT 
       u.id,
       u.name,
-      u.email,
       u.role,
-      u.status,
       u.profile_image,
-      COUNT(w.id) AS last_30_days_updates
+      COUNT(wu.id) AS month_updates
     FROM users u
-    LEFT JOIN work_updates w
-      ON w.user_id = u.id
-      AND w.created_at >= NOW() - INTERVAL 30 DAY
+    LEFT JOIN work_updates wu 
+      ON wu.user_id = u.id
+      AND MONTH(wu.created_at) = MONTH(CURRENT_DATE())
+      AND YEAR(wu.created_at) = YEAR(CURRENT_DATE())
     WHERE u.team_id = ?
       AND u.role = 'employee'
       AND u.status = 'active'
-    GROUP BY u.id, u.name, u.email, u.role, u.status, u.profile_image
-    ORDER BY last_30_days_updates DESC
+    GROUP BY u.id, u.name, u.role, u.profile_image
+    ORDER BY u.name ASC
   `;
 
   db.query(sql, [req.user.team_id], (err, rows) => {
@@ -2789,17 +2789,14 @@ app.get("/api/tl/employees-summary", verifyToken, (req, res) => {
 });
 app.get("/api/tl/employee-updates/:empId", verifyToken, (req, res) => {
   const sql = `
-    SELECT 
-      id,
-      description,
-      status,
-      media,
-      created_at
-    FROM work_updates
-    WHERE user_id = ?
-      AND team_id = ?
-      AND created_at >= NOW() - INTERVAL 30 DAY
-    ORDER BY created_at DESC
+    SELECT wu.*
+    FROM work_updates wu
+    JOIN users u ON u.id = wu.user_id
+    WHERE wu.user_id = ?
+      AND wu.team_id = ?
+      AND MONTH(wu.created_at) = MONTH(CURRENT_DATE())
+      AND YEAR(wu.created_at) = YEAR(CURRENT_DATE())
+    ORDER BY wu.created_at DESC
   `;
 
   db.query(sql, [req.params.empId, req.user.team_id], (err, rows) => {
